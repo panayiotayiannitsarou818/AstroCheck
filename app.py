@@ -140,11 +140,6 @@ with tab4:
         ready=all(checklist.values())
         with st.expander("Λίστα ελέγχου πριν τη δημιουργία", expanded=not ready):
             st.dataframe(pd.DataFrame([{"Έλεγχος":k,"Κατάσταση":"✓" if v else "Λείπει"} for k,v in checklist.items()]),use_container_width=True,hide_index=True)
-        with st.expander("Προεπισκόπηση πλήρους εντολής"): st.text_area("",prompt,height=320,label_visibility='collapsed')
-        st.download_button("⬇️ Λήψη πλήρους εντολής (.txt)",prompt,file_name="AstroCheck_Master_Prompt.txt",use_container_width=True)
-        with st.expander("Έτοιμο μήνυμα για επικόλληση στο ChatGPT/Claude"):
-            st.code(FULL_ANALYSIS_PASTE_MESSAGE, language=None)
-
         if not ready:
             st.markdown('<div class="warn">⚠ Η αυτόματη δημιουργία παραμένει κλειδωμένη μέχρι να ολοκληρωθούν όλοι οι έλεγχοι παραπάνω.</div>',unsafe_allow_html=True)
 
@@ -177,7 +172,12 @@ with tab4:
         with col_manual:
             with st.container(border=True):
                 st.markdown("#### 📋 Χειροκίνητη διαδρομή")
-                st.caption("Το ChatGPT/Claude κάνει μόνο αυτοέλεγχο. Ανέβασε εδώ το Word ώστε ο πραγματικός μηχανικός validator του AstroCheck Pro να αποφασίσει αν μπορεί να παραδοθεί.")
+                st.markdown("**1. Κατέβασε το δελτίο και στείλε το στο ChatGPT/Claude**")
+                audit=build_audit_docx(chart,personal,prompt)
+                st.download_button("⬇️ Λήψη δελτίου ελέγχου και πλήρους εντολής (Word)",audit,file_name="AstroCheck_Elegxos_kai_Odigies.docx",use_container_width=True)
+                with st.expander("Έτοιμο μήνυμα για επικόλληση στο ChatGPT/Claude"):
+                    st.code(FULL_ANALYSIS_PASTE_MESSAGE, language=None)
+                st.markdown("**2. Ανέβασε την ανάλυση σε Word και έλεγξέ την**")
                 uploaded_analysis=st.file_uploader(
                     "Τελική ανάλυση από ChatGPT/Claude (.docx)",
                     type=['docx'],
@@ -213,11 +213,6 @@ with tab4:
 
 with tab5:
     st.subheader("Ελεγμένη τεχνική ανάλυση")
-    if chart:
-        audit=build_audit_docx(chart,personal,prompt)
-        st.download_button("⬇️ Λήψη δελτίου ελέγχου και πλήρους εντολής (Word)",audit,file_name="AstroCheck_Elegxos_kai_Odigies.docx",use_container_width=True)
-        with st.expander("Έτοιμο μήνυμα για επικόλληση στο ChatGPT/Claude"):
-            st.code(FULL_ANALYSIS_PASTE_MESSAGE, language=None)
     if st.session_state.analysis:
         with st.expander("Προεπισκόπηση ανάλυσης"):
             st.text_area("",st.session_state.analysis,height=420,label_visibility='collapsed')
@@ -243,7 +238,7 @@ with tab5:
             st.caption("Διόρθωσε το κείμενο στην πηγή του (ChatGPT/Claude/API) και ξαναπέρασέ το από την καρτέλα 2.")
             st.button("Λήψη πλήρους ανάλυσης (Word) — κλειδωμένο μέχρι να διορθωθεί η ανάλυση",disabled=True,use_container_width=True)
     else:
-        st.info("Μετά την αυτόματη δημιουργία ή τον χειροκίνητο έλεγχο επικολλημένου κειμένου στην καρτέλα 2, θα εμφανιστεί εδώ το τελικό Word.")
+        st.info("Μετά τη δημιουργία και τον έλεγχο στην καρτέλα 2, θα εμφανιστεί εδώ η ελεγμένη ανάλυση σε Word.")
 
 with tab6:
     st.subheader("Τελική αναδιατύπωση")
