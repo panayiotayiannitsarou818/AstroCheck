@@ -1,40 +1,9 @@
-from astrology import RULERS, angular_distance, axis_activation_note, degree_theory, movement_text, orb_to_text
+from astrology import RULERS, axis_activation_note, degree_theory, orb_to_text
 
 def fmt(p):
     rx = " ανάδρομος" if p.retrograde else ""
     return f"{p.sign} {p.degree}°{p.minute:02d}′{p.second:02d}″{rx}"
 
-
-def build_orientation_source(chart):
-    """Καθαρή τεχνική πηγή για την προαιρετική υπηρεσία προσανατολισμού.
-
-    Δεν περνά την αφηγηματική ανάλυση των 12 Οίκων, η οποία μπορεί να
-    περιέχει προσωπικό πλαίσιο. Έτσι το μοντέλο βλέπει μόνο τα ελεγμένα
-    αστρολογικά δεδομένα που χρειάζεται η ξεχωριστή υπηρεσία.
-    """
-    points = "\n".join(
-        f"- {p.name}: {fmt(p)} | Οίκος {p.house or '—'} | {movement_text(p)}"
-        for p in chart.points
-    )
-    cusps = "\n".join(
-        f"- {number}ος Οίκος: {fmt(c)}"
-        for number, c in enumerate(chart.cusps, start=1)
-    )
-    aspects = "\n".join(
-        f"- {a.first}–{a.second} | {a.aspect} | orb {a.orb_text} | {a.weight} | πηγή: {a.source}"
-        for a in chart.aspects
-    ) or "- Δεν αναγνωρίστηκαν όψεις. Σταμάτησε και ζήτησε τεχνικό έλεγχο."
-    return f"""ΕΛΕΓΜΕΝΑ ΑΣΤΡΟΛΟΓΙΚΑ ΔΕΔΟΜΕΝΑ
-
-ΠΛΑΝΗΤΕΣ ΚΑΙ ΣΗΜΕΙΑ
-{points}
-
-ΑΚΜΕΣ ΟΙΚΩΝ
-{cusps}
-
-ΠΑΡΑΡΤΗΜΑ ΕΠΙΒΕΒΑΙΩΜΕΝΩΝ ΟΨΕΩΝ — ΜΟΝΑΔΙΚΗ ΠΗΓΗ ORB ΚΑΙ ΒΑΡΥΤΗΤΑΣ
-{aspects}
-"""
 
 def ruler_block(chart, cusp):
     modern, traditional = RULERS[cusp.sign]

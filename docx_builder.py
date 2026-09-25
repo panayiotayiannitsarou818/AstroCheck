@@ -3,7 +3,6 @@ from io import BytesIO
 from docx import Document
 from docx.shared import Inches, Pt, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.enum.section import WD_SECTION
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from prompts import fmt
@@ -203,33 +202,3 @@ def build_analysis_docx(title_name, analysis):
     bio=BytesIO(); d.save(bio); return bio.getvalue()
 
 
-def build_orientation_docx(title_name, service_label, context, command_text, source_analysis,
-                           style_example_text=""):
-    """Bundle for the optional, separate career-orientation service."""
-    d=Document(); sec=d.sections[0]; sec.top_margin=Inches(.75); sec.bottom_margin=Inches(.75); sec.left_margin=Inches(.8); sec.right_margin=Inches(.8)
-    d.styles['Normal'].font.name='Aptos'; d.styles['Normal'].font.size=Pt(10.5)
-    for s,size,color in [('Title',24,'1D3A34'),('Heading 1',18,'1D3A34'),('Heading 2',14,'5B7F6A')]:
-        d.styles[s].font.name='Aptos Display'; d.styles[s].font.size=Pt(size); d.styles[s].font.color.rgb=RGBColor.from_string(color)
-    p=d.add_paragraph(style='Title'); p.alignment=WD_ALIGN_PARAGRAPH.CENTER; p.add_run(service_label)
-    q=d.add_paragraph(); q.alignment=WD_ALIGN_PARAGRAPH.CENTER; q.add_run(title_name).bold=True
-    d.add_heading('ΔΕΣΜΕΥΤΙΚΗ ΑΡΧΗ',1)
-    d.add_paragraph('Πρόκειται για χωριστή προαιρετική υπηρεσία. Χρησιμοποίησε αποκλειστικά την παρακάτω δεσμευτική εντολή, το δηλωμένο πλαίσιο και την ήδη ελεγμένη τεχνική ανάλυση του ίδιου ατόμου. Μην χρησιμοποιήσεις μνήμη ή προηγούμενες συνομιλίες και μην επινοήσεις προσωπικά δεδομένα.')
-    d.add_heading('ΔΗΛΩΜΕΝΟ ΠΛΑΙΣΙΟ ΥΠΗΡΕΣΙΑΣ',1)
-    for key,value in context.items():
-        if str(value).strip():
-            p=d.add_paragraph(style='List Bullet'); p.add_run(f'{key}: ').bold=True; p.add_run(str(value).strip())
-    d.add_heading('ΔΕΣΜΕΥΤΙΚΗ ΕΝΤΟΛΗ ΕΠΑΓΓΕΛΜΑΤΙΚΟΥ ΠΡΟΣΑΝΑΤΟΛΙΣΜΟΥ',1)
-    _add_multiline(d, command_text)
-    if style_example_text.strip():
-        d.add_page_break()
-        d.add_heading('ΑΝΩΝΥΜΟ ΠΡΟΤΥΠΟ ΣΥΝΤΟΜΗΣ ΕΚΔΟΣΗΣ — ΜΟΝΟ ΓΙΑ ΔΟΜΗ ΚΑΙ ΥΦΟΣ',1)
-        d.add_paragraph(
-            'Χρησιμοποίησε το ακόλουθο υλικό μόνο ως πρότυπο μήκους, διάταξης και απλής γλώσσας. '
-            'Απαγορεύεται να αντιγράψεις από αυτό ταλέντα, επαγγελματικούς τομείς, επαγγέλματα ή '
-            'συμπεράσματα. Το περιεχόμενο για το νέο πρόσωπο πρέπει να προκύπτει αποκλειστικά από '
-            'τα ελεγμένα δεδομένα που ακολουθούν.'
-        )
-        _add_multiline(d, style_example_text)
-    d.add_page_break(); d.add_heading('ΕΛΕΓΜΕΝΗ ΤΕΧΝΙΚΗ ΑΝΑΛΥΣΗ — ΜΟΝΑΔΙΚΗ ΑΣΤΡΟΛΟΓΙΚΗ ΠΗΓΗ',1)
-    _add_multiline(d, source_analysis)
-    bio=BytesIO(); d.save(bio); return bio.getvalue()

@@ -87,9 +87,9 @@ def _analysis_result_panel(source: str, chart_name: str) -> None:
             final_doc = build_analysis_docx(chart_name, st.session_state.analysis)
             final_name = "Pliris_Astrologiki_Analysi.docx"
         st.download_button("⬇️ Λήψη ελεγμένης πλήρους ανάλυσης (Word)", final_doc,
-                           file_name=final_name, type="primary", use_container_width=True,
+                           file_name=final_name, type="primary", width="stretch",
                            key=f"download_analysis_{source}")
-        st.button("Συνέχεια στην Τελική αναδιατύπωση →", use_container_width=True,
+        st.button("Συνέχεια στην Τελική αναδιατύπωση →", width="stretch",
                   on_click=_request_main_tab, args=("3 · Τελική αναδιατύπωση",),
                   key=f"to_rewrite_{source}")
     else:
@@ -137,7 +137,7 @@ with st.sidebar:
 
     st.divider()
     st.caption("Τα δεδομένα επεξεργάζονται στη συνεδρία και δεν αποθηκεύονται από την εφαρμογή.")
-    if st.button("🔄 Νέα ανάλυση (καθαρισμός όλων)", use_container_width=True,
+    if st.button("🔄 Νέα ανάλυση (καθαρισμός όλων)", width="stretch",
                  help="Καθαρίζει τον χάρτη και τις αναλύσεις, ώστε να ξεκινήσεις με άλλο άτομο."):
         st.session_state.chart = None
         st.session_state.uploader_gen += 1  # αναγκάζει τους file_uploader να ξαναγίνουν "άδειοι"
@@ -158,7 +158,7 @@ with tab1:
     with st.expander("Προχωρημένα: προαιρετική προσωρινή αντικατάσταση"):
         instructions=st.file_uploader("Νεότερες οδηγίες",type=['docx'],key=f"instructions_{st.session_state.uploader_gen}")
         style=st.file_uploader("Νεότερο πρότυπο ύφους",type=['docx'],key=f"style_{st.session_state.uploader_gen}")
-    if pdf and st.button("Ανάγνωση και έλεγχος PDF",type="primary",use_container_width=True):
+    if pdf and st.button("Ανάγνωση και έλεγχος PDF",type="primary",width="stretch"):
         with st.spinner("Διαβάζεται το PDF…"):
             ok, new_chart, err = handle_pdf_upload(pdf.getvalue(), pdf.name)
             # Η λογική "διάβασε -> καθάρισε προηγούμενη περίπτωση -> bump
@@ -178,7 +178,7 @@ with tab1:
         st.button(
             "Συνέχεια στην Ανάλυση & έλεγχο →",
             type="primary",
-            use_container_width=True,
+            width="stretch",
             on_click=_request_main_tab,
             args=(TAB_ANALYSIS,),
         )
@@ -203,7 +203,7 @@ with tab4:
         checklist={"12 ακμές":len(chart.cusps)==12,"Βόρειος Δεσμός":any(p.name=='Βόρειος Δεσμός' for p in chart.points),"Νότιος Δεσμός":any(p.name=='Νότιος Δεσμός' for p in chart.points),"Πίνακας όψεων":bool(chart.aspects),"Οδηγίες v5.3 μόνιμα ενσωματωμένες":bool(instructions_text),"Καθαρός οδηγός ύφους ενσωματωμένος":bool(style_text)}
         ready=all(checklist.values())
         with st.expander("Λίστα ελέγχου πριν τη δημιουργία", expanded=not ready):
-            st.dataframe(pd.DataFrame([{"Έλεγχος":k,"Κατάσταση":"✓" if v else "Λείπει"} for k,v in checklist.items()]),use_container_width=True,hide_index=True)
+            st.dataframe(pd.DataFrame([{"Έλεγχος":k,"Κατάσταση":"✓" if v else "Λείπει"} for k,v in checklist.items()]),width="stretch",hide_index=True)
         if not ready:
             st.markdown('<div class="warn">⚠ Η αυτόματη δημιουργία παραμένει κλειδωμένη μέχρι να ολοκληρωθούν όλοι οι έλεγχοι παραπάνω.</div>',unsafe_allow_html=True)
 
@@ -215,7 +215,7 @@ with tab4:
                 st.markdown("#### 🤖 Αυτόματη δημιουργία")
                 st.caption("Χρειάζεται δικό σου OpenAI API key. Δεν αποθηκεύεται πουθενά.")
                 api=st.text_input("OpenAI API key",type="password",label_visibility='collapsed',placeholder="sk-...")
-                if st.button("Δημιουργία πλήρους ανάλυσης",type="primary",disabled=not ready or not api,use_container_width=True):
+                if st.button("Δημιουργία πλήρους ανάλυσης",type="primary",disabled=not ready or not api,width="stretch"):
                     with st.spinner("Δημιουργείται η ανάλυση των 12 Οίκων…"):
                         try:
                             text=generate_analysis(api,prompt)
@@ -236,7 +236,7 @@ with tab4:
                 st.markdown("#### 📋 Χειροκίνητη διαδρομή")
                 st.markdown("**1. Κατέβασε το δελτίο και στείλε το στο ChatGPT/Claude**")
                 audit=build_audit_docx(chart,personal,prompt)
-                st.download_button("⬇️ Λήψη δελτίου ελέγχου και πλήρους εντολής (Word)",audit,file_name="AstroCheck_Elegxos_kai_Odigies.docx",use_container_width=True)
+                st.download_button("⬇️ Λήψη δελτίου ελέγχου και πλήρους εντολής (Word)",audit,file_name="AstroCheck_Elegxos_kai_Odigies.docx",width="stretch")
                 with st.expander("Έτοιμο μήνυμα για επικόλληση στο ChatGPT/Claude"):
                     st.code(FULL_ANALYSIS_PASTE_MESSAGE, language=None)
                 st.markdown("**2. Ανέβασε την ανάλυση σε Word και έλεγξέ την**")
@@ -245,7 +245,7 @@ with tab4:
                     type=['docx'],
                     key=f"analysis_docx_{st.session_state.uploader_gen}",
                 )
-                if st.button("Έλεγχος ανάλυσης",use_container_width=True,disabled=not uploaded_analysis):
+                if st.button("Έλεγχος ανάλυσης",width="stretch",disabled=not uploaded_analysis):
                     try:
                         uploaded_bytes=uploaded_analysis.getvalue()
                         extracted=docx_text(uploaded_bytes)
@@ -261,7 +261,7 @@ with tab4:
                 st.divider()
                 st.caption("Εναλλακτικά, μπορείς να επικολλήσεις το πλήρες κείμενο.")
                 pasted=st.text_area("Επικολλημένη ανάλυση",height=150,key='pasted_analysis',label_visibility='collapsed',placeholder="Επικόλλησε εδώ το πλήρες κείμενο της ανάλυσης…")
-                if st.button("Έλεγχος πληρότητας επικολλημένου κειμένου",use_container_width=True,disabled=not pasted):
+                if st.button("Έλεγχος πληρότητας επικολλημένου κειμένου",width="stretch",disabled=not pasted):
                     st.session_state.analysis=pasted
                     st.session_state.analysis_docx_bytes=None
                     st.session_state.analysis_docx_name=''
@@ -278,7 +278,7 @@ with tab6:
             "⬇️ Λήψη Δεσμευτικής Εντολής Τελικής Αναδιατύπωσης",
             rewrite_command_path.read_bytes(),
             file_name="Desmeftiki_Entoli_Telikis_Anadiatyposis_v8.docx",
-            use_container_width=True,
+            width="stretch",
         )
     else:
         st.warning("Λείπει η ενσωματωμένη Δεσμευτική Εντολή Τελικής Αναδιατύπωσης.")
@@ -289,7 +289,7 @@ with tab6:
         st.warning("Πρώτα χρειάζεται ελεγμένη τεχνική ανάλυση από την καρτέλα «2 · Ανάλυση & έλεγχος».")
     else:
         rewritten=st.file_uploader("Τελική αναδιατύπωση (.docx)",type=['docx'],key=f"rewrite_docx_{st.session_state.uploader_gen}")
-        if st.button("Έλεγχος τελικού εντύπου",disabled=not rewritten,use_container_width=True):
+        if st.button("Έλεγχος τελικού εντύπου",disabled=not rewritten,width="stretch"):
             rewritten_bytes=rewritten.getvalue()
             rewritten_text=docx_text(rewritten_bytes)
             result=validate_rewrite(chart,st.session_state.analysis,rewritten_text,personal)
@@ -300,10 +300,10 @@ with tab6:
         if result:
             if result.ok:
                 st.markdown(f'<div class="ok">{result.summary()}</div>',unsafe_allow_html=True)
-                st.download_button("⬇️ Λήψη τελικού εντύπου",st.session_state.rewrite_docx_bytes,file_name=st.session_state.rewrite_docx_name,type="primary",use_container_width=True)
+                st.download_button("⬇️ Λήψη τελικού εντύπου",st.session_state.rewrite_docx_bytes,file_name=st.session_state.rewrite_docx_name,type="primary",width="stretch")
             else:
                 st.markdown(f'<div class="warn">⚠ {result.summary()}</div>',unsafe_allow_html=True)
                 with st.expander("Λεπτομέρειες",expanded=True):
                     for line in result.details_lines(): st.write("•",line)
-                st.button("Λήψη τελικής αναδιατύπωσης — κλειδωμένη",disabled=True,use_container_width=True)
+                st.button("Λήψη τελικής αναδιατύπωσης — κλειδωμένη",disabled=True,width="stretch")
 

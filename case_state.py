@@ -30,12 +30,8 @@ from __future__ import annotations
 # ΔΕΝ περιλαμβάνει 'chart' και 'uploader_gen': αυτά τα διαχειρίζεται ρητά
 # ο καλών (reset_case_state τα αφήνει σκόπιμα ανέγγιχτα).
 CASE_STATE_KEYS = (
-    'confirmed', 'name_override', 'profession', 'family', 'projects', 'habits',
-    'experiences', 'language', 'pasted_analysis', 'analysis_source',
+    'language', 'pasted_analysis', 'analysis_source',
     'rewrite_validation', 'rewrite_docx_bytes', 'rewrite_docx_name',
-    'orientation_validation', 'orientation_service', 'orientation_presentation',
-    'orientation_cyprus_school', 'orientation_docx_bytes', 'orientation_docx_name',
-    'orientation_audit_docx_bytes',
 )
 
 
@@ -46,7 +42,7 @@ def _default_state():
 
 def reset_case_state(state=None) -> None:
     """Καθαρίζει ΟΛΑ τα δεδομένα του τρέχοντος πελάτη -- προσωπικό πλαίσιο,
-    ανάλυση, αναδιατύπωση, προσανατολισμό. ΔΕΝ αγγίζει 'chart' ή
+    ανάλυση και αναδιατύπωση. ΔΕΝ αγγίζει 'chart' ή
     'uploader_gen' -- αυτά τα αποφασίζει ρητά ο καλών (βλ. handle_pdf_upload
     και το κουμπί "Νέα ανάλυση" στο app.py).
 
@@ -69,11 +65,11 @@ def handle_pdf_upload(pdf_bytes: bytes, pdf_name: str, state=None, parse_fn=None
     καθαρίζει την προηγούμενη περίπτωση (reset_case_state) και αποθηκεύει
     το νέο chart -- ώστε η απευθείας αντικατάσταση PDF (χωρίς προηγούμενο
     πάτημα "Νέα ανάλυση") να μην αφήνει πίσω όνομα, προσωπικό πλαίσιο ή
-    παλιά rewrite/orientation bytes του προηγούμενου πελάτη.
+    παλιά rewrite bytes του προηγούμενου πελάτη.
 
     Αυξάνει επίσης το 'uploader_gen' κατά 1 σε επιτυχία, ώστε ΟΛΟΙ οι
-    file_uploader της εφαρμογής (rewrite_docx_*, orientation_result_*,
-    orientation_audit_*, analysis_docx_* -- όχι μόνο pdf/instructions/style)
+    file_uploader της εφαρμογής (rewrite_docx_*, analysis_docx_* -- όχι μόνο
+    pdf/instructions/style)
     να ξαναδημιουργηθούν άδειοι στο επόμενο render, χωρίς να παραμένει
     επιλεγμένο ένα παλιό αρχείο σε κάποιο widget.
 
