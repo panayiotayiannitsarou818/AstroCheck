@@ -31,7 +31,7 @@ from __future__ import annotations
 # ο καλών (reset_case_state τα αφήνει σκόπιμα ανέγγιχτα).
 CASE_STATE_KEYS = (
     'confirmed', 'name_override', 'profession', 'family', 'projects', 'habits',
-    'experiences', 'language', 'pasted_analysis',
+    'experiences', 'language', 'pasted_analysis', 'analysis_source',
     'rewrite_validation', 'rewrite_docx_bytes', 'rewrite_docx_name',
     'orientation_validation', 'orientation_service', 'orientation_presentation',
     'orientation_cyprus_school', 'orientation_docx_bytes', 'orientation_docx_name',

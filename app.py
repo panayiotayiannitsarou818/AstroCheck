@@ -57,6 +57,44 @@ def _error_with_details(validation, suffix: str) -> None:
                     "ολόκληρο το Word:\n" + "\n".join(f"- {l}" for l in lines), language=None)
 
 
+TAB_ANALYSIS = "2 · Ανάλυση & έλεγχος"
+
+
+def _analysis_result_panel(source: str, chart_name: str) -> None:
+    """Αποτέλεσμα ελέγχου ΑΚΡΙΒΩΣ κάτω από το κουμπί που το προκάλεσε.
+
+    Αντικαθιστά την πρώην καρτέλα «3 · Τεχνικό Word»: αν ο έλεγχος περάσει,
+    η λήψη εμφανίζεται εδώ· αν όχι, εμφανίζονται αναλυτικά τα σφάλματα και
+    η λήψη μένει κλειδωμένη. `source` = 'api' | 'docx' | 'paste'.
+    """
+    if st.session_state.get("analysis_source") != source or not st.session_state.analysis:
+        return
+    validation = st.session_state.validation
+    if validation is None:
+        return
+    if validation.ok:
+        st.success(validation.summary())
+        if source == "docx" and st.session_state.analysis_docx_bytes:
+            final_doc = st.session_state.analysis_docx_bytes
+            final_name = st.session_state.analysis_docx_name or "Pliris_Astrologiki_Analysi.docx"
+        else:
+            final_doc = build_analysis_docx(chart_name, st.session_state.analysis)
+            final_name = "Pliris_Astrologiki_Analysi.docx"
+        st.download_button("⬇️ Λήψη ελεγμένης πλήρους ανάλυσης (Word)", final_doc,
+                           file_name=final_name, type="primary", use_container_width=True,
+                           key=f"download_analysis_{source}")
+        st.button("Συνέχεια στην Τελική αναδιατύπωση →", use_container_width=True,
+                  on_click=_request_main_tab, args=("3 · Τελική αναδιατύπωση",),
+                  key=f"to_rewrite_{source}")
+    else:
+        suffix = ("Το Word απορρίφθηκε και η λήψη παραμένει κλειδωμένη."
+                  if source == "docx" else "Η λήψη παραμένει κλειδωμένη.")
+        _error_with_details(validation, suffix)
+    with st.expander("Προεπισκόπηση κειμένου ανάλυσης"):
+        st.text_area("Κείμενο ανάλυσης", st.session_state.analysis, height=380,
+                     label_visibility="collapsed", key=f"preview_{source}")
+
+
 def _request_main_tab(label: str) -> None:
     st.session_state._requested_main_tab = label
 
@@ -100,8 +138,12 @@ with st.sidebar:
         reset_case_state()
         st.rerun()
 
-MAIN_TABS = ["1 · Αρχεία","2 · Δημιουργία","3 · Τεχνικό Word","4 · Τελική αναδιατύπωση"]
-tab1,tab4,tab5,tab6=st.tabs(MAIN_TABS, key="main_tab", default="1 · Αρχεία")
+MAIN_TABS = ["1 · Αρχεία", TAB_ANALYSIS, "3 · Τελική αναδιατύπωση"]
+# Μια συνεδρία που είχε ανοιχτή καρτέλα με παλιό όνομα (π.χ. «3 · Τεχνικό Word»,
+# που καταργήθηκε) επιστρέφει με ασφάλεια στην πρώτη καρτέλα.
+if st.session_state.get("main_tab") not in (None, *MAIN_TABS):
+    st.session_state.main_tab = "1 · Αρχεία"
+tab1,tab4,tab6=st.tabs(MAIN_TABS, key="main_tab", default="1 · Αρχεία")
 
 with tab1:
     st.subheader("Ανέβασε μόνο το νέο PDF")
@@ -119,8 +161,8 @@ with tab1:
             # st.session_state (δεν περάσαμε state=... εδώ) -- εδώ μένει μόνο
             # η παρουσίαση.
             if ok:
-                st.session_state._requested_main_tab = "2 · Δημιουργία"
-                st.success("✓ Το PDF διαβάστηκε. Συνέχισε στην καρτέλα «2 · Δημιουργία» →")
+                st.session_state._requested_main_tab = TAB_ANALYSIS
+                st.success("✓ Το PDF διαβάστηκε. Συνέχισε στην καρτέλα «2 · Ανάλυση & έλεγχος» →")
                 st.rerun()
             else:
                 st.error("Η ανάγνωση σταμάτησε με ασφάλεια — το PDF μπορεί να μην είναι το σωστό Astrodienst Data Sheet, ή η μορφή του διαφέρει.")
@@ -128,11 +170,11 @@ with tab1:
     if st.session_state.chart and not pdf:
         st.info(f"Ήδη ελεγμένος χάρτης στη συνεδρία: **{st.session_state.chart.name}**. Ανέβασε νέο PDF μόνο αν θέλεις να τον αντικαταστήσεις, ή πάτα «🔄 Νέα ανάλυση» στο πλάι.")
         st.button(
-            "Συνέχεια στη Δημιουργία →",
+            "Συνέχεια στην Ανάλυση & έλεγχο →",
             type="primary",
             use_container_width=True,
             on_click=_request_main_tab,
-            args=("2 · Δημιουργία",),
+            args=(TAB_ANALYSIS,),
         )
 
 instructions_text = docx_text(instructions.getvalue()) if instructions else default_instructions_text
@@ -142,7 +184,7 @@ style_name = style.name if style else "Ενσωματωμένος καθαρός
 
 chart=st.session_state.chart
 with tab4:
-    st.subheader("Δημιουργία πλήρους ανάλυσης")
+    st.subheader("Δημιουργία και έλεγχος πλήρους ανάλυσης")
     language=st.selectbox("Γλώσσα τελικής ανάλυσης", ["Ελληνικά", "Αγγλικά"], key="language")
     personal={"Όνομα":chart.name if chart else ""}
     prompt=''
@@ -175,13 +217,11 @@ with tab4:
                             st.session_state.analysis_docx_bytes=None
                             st.session_state.analysis_docx_name=''
                             st.session_state.validation=validate_analysis(chart,text,personal)
-                            if st.session_state.validation.ok:
-                                st.success("✓ Πέρασε τον έλεγχο πληρότητας. Πήγαινε στην καρτέλα 3 →")
-                            else:
-                                _error_with_details(st.session_state.validation, "Η λήψη του Word παραμένει κλειδωμένη.")
+                            st.session_state.analysis_source='api'
                         except Exception as e:
                             st.error("Η δημιουργία απέτυχε.")
                             with st.expander("Τεχνική λεπτομέρεια"): st.code(str(e))
+                _analysis_result_panel("api", chart.name)
                 if not ready:
                     st.caption("Κλειδωμένο μέχρι να ολοκληρωθεί η λίστα ελέγχου παραπάνω.")
 
@@ -207,13 +247,11 @@ with tab4:
                         st.session_state.analysis_docx_bytes=uploaded_bytes
                         st.session_state.analysis_docx_name=uploaded_analysis.name
                         st.session_state.validation=validate_analysis(chart,extracted,personal)
-                        if st.session_state.validation.ok:
-                            st.success("✓ Το τελικό Word πέρασε τον αυστηρό έλεγχο. Πήγαινε στην καρτέλα 3 →")
-                        else:
-                            _error_with_details(st.session_state.validation, "Το Word απορρίφθηκε και η λήψη παραμένει κλειδωμένη.")
+                        st.session_state.analysis_source='docx'
                     except Exception as e:
                         st.error("Δεν ήταν δυνατή η ανάγνωση του Word.")
                         with st.expander("Τεχνική λεπτομέρεια"): st.code(str(e))
+                _analysis_result_panel("docx", chart.name)
                 st.divider()
                 st.caption("Εναλλακτικά, μπορείς να επικολλήσεις το πλήρες κείμενο.")
                 pasted=st.text_area("Επικολλημένη ανάλυση",height=150,key='pasted_analysis',label_visibility='collapsed',placeholder="Επικόλλησε εδώ το πλήρες κείμενο της ανάλυσης…")
@@ -222,39 +260,8 @@ with tab4:
                     st.session_state.analysis_docx_bytes=None
                     st.session_state.analysis_docx_name=''
                     st.session_state.validation=validate_analysis(chart,pasted,personal)
-                    if st.session_state.validation.ok:
-                        st.success("✓ Πέρασε τον έλεγχο πληρότητας. Πήγαινε στην καρτέλα 3 →")
-                    else:
-                        _error_with_details(st.session_state.validation, "Η λήψη παραμένει κλειδωμένη.")
-
-with tab5:
-    st.subheader("Ελεγμένη τεχνική ανάλυση")
-    if st.session_state.analysis:
-        with st.expander("Προεπισκόπηση ανάλυσης"):
-            st.text_area("",st.session_state.analysis,height=420,label_visibility='collapsed')
-        validation=st.session_state.validation
-        if validation is None:
-            validation=validate_analysis(chart,st.session_state.analysis,personal)
-            st.session_state.validation=validation
-        st.subheader("Μηχανικός έλεγχος πληρότητας")
-        if validation.ok:
-            st.markdown(f'<div class="ok">{validation.summary()}</div>',unsafe_allow_html=True)
-            original_docx=st.session_state.get('analysis_docx_bytes')
-            if original_docx:
-                final_doc=original_docx
-                final_name=st.session_state.get('analysis_docx_name') or "Pliris_Astrologiki_Analysi.docx"
-            else:
-                final_doc=build_analysis_docx(chart.name,st.session_state.analysis)
-                final_name="Pliris_Astrologiki_Analysi.docx"
-            st.download_button("⬇️ Λήψη ελεγμένης πλήρους ανάλυσης (Word)",final_doc,file_name=final_name,type="primary",use_container_width=True)
-        else:
-            st.markdown(f'<div class="warn">⚠ {validation.summary()}</div>',unsafe_allow_html=True)
-            with st.expander("Λεπτομέρειες ελέγχου πληρότητας",expanded=True):
-                for line in validation.details_lines(): st.write("•",line)
-            st.caption("Διόρθωσε το κείμενο στην πηγή του (ChatGPT/Claude/API) και ξαναπέρασέ το από την καρτέλα 2.")
-            st.button("Λήψη πλήρους ανάλυσης (Word) — κλειδωμένο μέχρι να διορθωθεί η ανάλυση",disabled=True,use_container_width=True)
-    else:
-        st.info("Μετά τη δημιουργία και τον έλεγχο στην καρτέλα 2, θα εμφανιστεί εδώ η ελεγμένη ανάλυση σε Word.")
+                    st.session_state.analysis_source='paste'
+                _analysis_result_panel("paste", chart.name)
 
 with tab6:
     st.subheader("Τελική αναδιατύπωση")
@@ -272,7 +279,7 @@ with tab6:
     with st.expander("Έτοιμο μήνυμα για επικόλληση στο ChatGPT/Claude", expanded=True):
         st.code(REWRITE_PASTE_MESSAGE, language=None)
     if not (chart and st.session_state.analysis and st.session_state.validation and st.session_state.validation.ok):
-        st.warning("Πρώτα χρειάζεται ελεγμένη τεχνική ανάλυση από τις καρτέλες 2–3.")
+        st.warning("Πρώτα χρειάζεται ελεγμένη τεχνική ανάλυση από την καρτέλα «2 · Ανάλυση & έλεγχος».")
     else:
         rewritten=st.file_uploader("Τελική αναδιατύπωση (.docx)",type=['docx'],key=f"rewrite_docx_{st.session_state.uploader_gen}")
         if st.button("Έλεγχος τελικού εντύπου",disabled=not rewritten,use_container_width=True):
