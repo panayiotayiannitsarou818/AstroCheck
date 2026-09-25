@@ -185,7 +185,7 @@ class ValidationResult:
         for house_n, expected, box_text in self.inconsistent_ruler_box:
             lines.append(f"Οίκος {house_n}: το κυρίως κείμενο ονομάζει κυβερνήτη {', '.join(expected)}, αλλά το πλαίσιο σύνοψης λέει «{box_text}» -- πιθανή αντιγραφή από άλλον Οίκο.")
         for point_name, claimed, expected, snippet in self.wrong_house_claims:
-            lines.append(f"{point_name}: δηλώνεται στον {claimed}ο Οίκο, αλλά τα ελεγμένα δεδομένα τον τοποθετούν στον {expected}ο. Απόσπασμα: «{snippet}»")
+            lines.append(f"Λανθασμένη τοποθέτηση — {point_name}: το κείμενο τον/την δηλώνει στον {claimed}ο Οίκο, ενώ τα ελεγμένα δεδομένα δίνουν {expected}ο Οίκο. Σημείο: {snippet}")
         for category, snippet in self.unauthorized_personal_claims:
             lines.append(f"Μη δηλωμένο προσωπικό στοιχείο ({category}): «{snippet}»")
         return lines
@@ -535,6 +535,69 @@ def _involved_points(chart, house_number: int) -> set[str]:
     return involved
 
 
+def _claim_belongs_to_other_point(snippet: str, point_name: str) -> bool:
+    """True όταν η δήλωση τοποθέτησης στο απόσπασμα αφορά ΑΛΛΟ σημείο.
+
+    Το regex του _location_claim_errors επιτρέπει έως 90 χαρακτήρες ανάμεσα
+    στο όνομα και στο ρήμα. Έτσι, σε πρόταση όπως
+    «Ο Βόρειος Δεσμός στον Καρκίνο κυβερνάται από τη Σελήνη, η οποία
+    βρίσκεται … στον 10ο Οίκο», ο 10ος Οίκος αποδιδόταν λανθασμένα στον
+    Βόρειο Δεσμό. Το υποκείμενο του «βρίσκεται» είναι το πλησιέστερο
+    προηγούμενο σημείο, όχι το πρώτο της πρότασης.
+
+    Επιστρέφει True αν, μετά το αρχικό όνομα, εμφανίζεται άλλο σημείο του
+    χάρτη πριν από τον αριθμό του Οίκου. Το άλλο σημείο ελέγχεται κανονικά
+    με τη δική του αντιστοίχιση, οπότε μια πραγματικά λάθος δήλωση δεν
+    χάνεται.
+    """
+    own = re.match(_name_pattern(point_name), snippet, re.IGNORECASE)
+    rest = snippet[own.end():] if own else snippet
+    for other, pattern in _NAME_FORMS.items():
+        if other == point_name:
+            continue
+        # «Βόρειος Δεσμός» περιέχει «Δεσμός» -- τα ονόματα δεν επικαλύπτονται
+        # με τα υπόλοιπα, οπότε αρκεί απλή αναζήτηση.
+        if re.search(pattern, rest, re.IGNORECASE):
+            return True
+    return False
+
+
+def _claim_context(text: str, start: int, end: int, segments_bounds) -> str:
+    """Επιστρέφει «ενότητα · «ολόκληρη πρόταση»» για μια δήλωση τοποθέτησης,
+    ώστε το μήνυμα λάθους να δείχνει ακριβώς πού βρίσκεται το πρόβλημα."""
+    left = max(text.rfind(ch, 0, start) for ch in ".!?\n")
+    right_candidates = [i for i in (text.find(ch, end) for ch in ".!?\n") if i != -1]
+    right = min(right_candidates) + 1 if right_candidates else len(text)
+    sentence = " ".join(text[left + 1:right].split())
+    section = "εκτός των ενοτήτων των Οίκων"
+    for n, s0, e0 in segments_bounds:
+        if s0 <= start < e0:
+            section = f"ενότητα {n}ου Οίκου"
+            break
+    return f"{section} · πρόταση: «{sentence}»"
+
+
+def _segments_bounds(text: str):
+    """(Οίκος, αρχή, τέλος) κάθε ενότητας Οίκου. Ο 12ος τελειώνει πριν από
+    τις τελικές ενότητες, αν αυτές εντοπίζονται."""
+    starts = []
+    cursor = 0
+    for n in range(1, 13):
+        m = _HOUSE_HEADING_PATTERNS[n - 1].search(text, cursor)
+        if not m:
+            m = _HOUSE_PATTERNS[n - 1].search(text, cursor) or _HOUSE_PATTERNS_ALT[n - 1].search(text, cursor)
+        if m:
+            starts.append((n, m.start()))
+            cursor = m.start() + 1
+    final_idx = text.find("Τελική συνθετική εικόνα", starts[-1][1] if starts else 0)
+    tail_end = final_idx if final_idx != -1 else len(text)
+    bounds = []
+    for i, (n, st) in enumerate(starts):
+        en = starts[i + 1][1] if i + 1 < len(starts) else tail_end
+        bounds.append((n, st, en))
+    return bounds
+
+
 def _location_claim_errors(chart, text: str) -> list[tuple[str, int, int, str]]:
     """Detect only affirmative location statements, avoiding thematic links.
 
@@ -557,6 +620,7 @@ def _location_claim_errors(chart, text: str) -> list[tuple[str, int, int, str]]:
         12: r"εσωτερικ(?:ό|ού)\s+κόσμ|παρασκήν|ασυνείδητ",
     }
     errors = []
+    bounds = _segments_bounds(text)
     for point in chart.points:
         if point.house is None or point.kind not in ("planet", "node"):
             continue
@@ -572,14 +636,20 @@ def _location_claim_errors(chart, text: str) -> list[tuple[str, int, int, str]]:
             re.IGNORECASE,
         )
         for match in numeric.finditer(text):
+            if _claim_belongs_to_other_point(match.group(0), point.name):
+                continue
             claimed = int(match.group(1))
             if 1 <= claimed <= 12 and claimed != point.house:
-                errors.append((point.name, claimed, point.house, match.group(0).strip()))
+                errors.append((point.name, claimed, point.house,
+                               _claim_context(text, match.start(), match.end(), bounds)))
         for match in thematic.finditer(text):
+            if _claim_belongs_to_other_point(match.group(0), point.name):
+                continue
             label = match.group(1)
             claimed = next((n for n, pat in theme_houses.items() if re.search(pat, label, re.IGNORECASE)), None)
             if claimed and claimed != point.house:
-                errors.append((point.name, claimed, point.house, match.group(0).strip()))
+                errors.append((point.name, claimed, point.house,
+                               _claim_context(text, match.start(), match.end(), bounds)))
     return errors
 
 
@@ -880,7 +950,7 @@ class RewriteValidationResult:
         for s in self.missing_source_sections: lines.append(f"Η πηγή περιέχει την ενότητα «{s}», αλλά η αναδιατύπωση την παρέλειψε.")
         for s in self.invented_sections: lines.append(f"Η αναδιατύπωση πρόσθεσε την ενότητα «{s}», παρότι δεν υπάρχει στην ελεγμένη πηγή.")
         for point_name, claimed, expected, snippet in self.wrong_house_claims:
-            lines.append(f"{point_name}: δηλώνεται στον {claimed}ο αντί στον {expected}ο Οίκο: «{snippet}»")
+            lines.append(f"Λανθασμένη τοποθέτηση — {point_name}: δηλώνεται στον {claimed}ο αντί στον {expected}ο Οίκο. Σημείο: {snippet}")
         for category, snippet in self.unauthorized_personal_claims:
             lines.append(f"Μη δηλωμένο προσωπικό στοιχείο ({category}): «{snippet}»")
         for a in self.missing_mandatory_aspects:
@@ -993,7 +1063,7 @@ class OrientationValidationResult:
     def details_lines(self):
         lines=[]
         for point,claimed,expected,snippet in self.wrong_house_claims:
-            lines.append(f"{point}: δηλώνεται στον {claimed}ο αντί στον {expected}ο Οίκο: «{snippet}»")
+            lines.append(f"Λανθασμένη τοποθέτηση — {point}: δηλώνεται στον {claimed}ο αντί στον {expected}ο Οίκο. Σημείο: {snippet}")
         for category,snippet in self.unauthorized_personal_claims:
             lines.append(f"Μη δηλωμένο προσωπικό στοιχείο ({category}): «{snippet}»")
         for topic in self.missing_core_topics: lines.append(f"Δεν εντοπίστηκε βασικό μέρος: {topic}.")

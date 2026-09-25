@@ -41,6 +41,22 @@ if st.session_state.get("_requested_main_tab"):
     st.session_state.main_tab = st.session_state.pop("_requested_main_tab")
 
 
+def _error_with_details(validation, suffix: str) -> None:
+    """Κόκκινο μήνυμα που περιλαμβάνει ΑΝΑΛΥΤΙΚΑ κάθε σφάλμα (σημείο,
+    ενότητα και ακριβή πρόταση), συν έτοιμο κείμενο για επικόλληση στο
+    ChatGPT/Claude ώστε η διόρθωση να είναι στοχευμένη."""
+    lines = validation.details_lines()
+    body = validation.summary() + " " + suffix
+    if lines:
+        body += "\n\n**Αναλυτικά:**\n" + "\n".join(f"- {l}" for l in lines)
+    st.error(body)
+    if lines:
+        with st.expander("📋 Κείμενο διόρθωσης για επικόλληση στο ChatGPT/Claude"):
+            st.code("Ο έλεγχος AstroCheck εντόπισε τα εξής. Διόρθωσε ΜΟΝΟ αυτά τα σημεία, "
+                    "χωρίς να αλλάξεις όψεις, orb, βαρύτητες ή ενότητες, και παράδωσε ξανά "
+                    "ολόκληρο το Word:\n" + "\n".join(f"- {l}" for l in lines), language=None)
+
+
 def _request_main_tab(label: str) -> None:
     st.session_state._requested_main_tab = label
 
@@ -162,7 +178,7 @@ with tab4:
                             if st.session_state.validation.ok:
                                 st.success("✓ Πέρασε τον έλεγχο πληρότητας. Πήγαινε στην καρτέλα 3 →")
                             else:
-                                st.error(st.session_state.validation.summary()+" Δες λεπτομέρειες στην καρτέλα 3. Η λήψη του Word παραμένει κλειδωμένη.")
+                                _error_with_details(st.session_state.validation, "Η λήψη του Word παραμένει κλειδωμένη.")
                         except Exception as e:
                             st.error("Η δημιουργία απέτυχε.")
                             with st.expander("Τεχνική λεπτομέρεια"): st.code(str(e))
@@ -194,7 +210,7 @@ with tab4:
                         if st.session_state.validation.ok:
                             st.success("✓ Το τελικό Word πέρασε τον αυστηρό έλεγχο. Πήγαινε στην καρτέλα 3 →")
                         else:
-                            st.error(st.session_state.validation.summary()+" Το Word απορρίφθηκε και η λήψη παραμένει κλειδωμένη.")
+                            _error_with_details(st.session_state.validation, "Το Word απορρίφθηκε και η λήψη παραμένει κλειδωμένη.")
                     except Exception as e:
                         st.error("Δεν ήταν δυνατή η ανάγνωση του Word.")
                         with st.expander("Τεχνική λεπτομέρεια"): st.code(str(e))
@@ -209,7 +225,7 @@ with tab4:
                     if st.session_state.validation.ok:
                         st.success("✓ Πέρασε τον έλεγχο πληρότητας. Πήγαινε στην καρτέλα 3 →")
                     else:
-                        st.error(st.session_state.validation.summary()+" Δες λεπτομέρειες στην καρτέλα 3.")
+                        _error_with_details(st.session_state.validation, "Η λήψη παραμένει κλειδωμένη.")
 
 with tab5:
     st.subheader("Ελεγμένη τεχνική ανάλυση")
