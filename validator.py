@@ -895,6 +895,51 @@ def _appendix_technical_errors(chart, text: str):
     return _check_aspects_present(appendix_text, chart.aspects)
 
 
+# Η τελική αναδιατύπωση είναι το έντυπο που βλέπει ο πελάτης. ΔΕΝ πρέπει να
+# περιέχει τεχνικά αστρολογικά δεδομένα: μοίρες, orb, κατηγορίες βαρύτητας,
+# πίνακα/Παράρτημα όψεων ή ενδείξεις πηγής. Τα τεχνικά στοιχεία μένουν στο
+# ελεγμένο τεχνικό Word (validate_analysis), που τα περιέχει αυτούσια.
+_CLOSING_SENTENCE = ("Αυτή η ανάλυση βασίζεται σε πλήρη μαθηματικό έλεγχο όλων των "
+                     "αστρολογικών όψεων του χάρτη σου· τα τεχνικά στοιχεία είναι "
+                     "διαθέσιμα αν θες να τα δεις.")
+
+_CLIENT_TECHNICAL_PATTERNS = [
+    ("μοίρες/λεπτά", re.compile(r"\d{1,3}\s*°(?:\s*\d{1,2}\s*′)?(?:\s*\d{1,2}\s*″)?")),
+    ("orb", re.compile(r"(?<![A-Za-z])orb(?![A-Za-z])", re.IGNORECASE)),
+    ("κατηγορία βαρύτητας", re.compile(
+        r"Στενή\s*/\s*ισχυρή|Πλατιά\s+αλλά\s+έγκυρη|Πολύ\s+πλατιά\s*/\s*δευτερεύουσα",
+        re.IGNORECASE)),
+    ("Παράρτημα/πίνακας όψεων", re.compile(
+        r"(?m)^\s*(?:Τεχνικό\s+)?Παράρτημα\b|Παράρτημα[^\r\n]{0,90}επιβεβαιωμέν\w*[^\r\n]{0,40}όψε(?:ων|ις)",
+        re.IGNORECASE)),
+    ("ένδειξη τεχνικής πηγής", re.compile(
+        r"Πίνακας\s+Astrodienst|Μαθηματική\s+παραγωγή\s+από\s+τον\s+άξονα", re.IGNORECASE)),
+]
+
+
+def _client_technical_data(text: str) -> list[tuple[str, str]]:
+    """(κατηγορία, πρόταση) για κάθε σημείο όπου εμφανίζεται τεχνικό δεδομένο.
+    Μία εγγραφή ανά πρόταση και κατηγορία, ώστε ο πίνακας όψεων να μη βγάζει
+    εκατοντάδες γραμμές για το ίδιο πρόβλημα."""
+    found, seen = [], set()
+    for category, pattern in _CLIENT_TECHNICAL_PATTERNS:
+        for m in pattern.finditer(text):
+            left = max(text.rfind(ch, 0, m.start()) for ch in ".!?\n")
+            rights = [i for i in (text.find(ch, m.end()) for ch in ".!?\n") if i != -1]
+            right = min(rights) + 1 if rights else len(text)
+            sentence = " ".join(text[left + 1:right].split())[:220]
+            key = (category, sentence)
+            if key not in seen:
+                seen.add(key)
+                found.append(key)
+    return found
+
+
+def _has_closing_sentence(text: str) -> bool:
+    norm = " ".join(text.split())
+    return norm.rstrip().endswith(" ".join(_CLOSING_SENTENCE.split()))
+
+
 @dataclass
 class RewriteValidationResult:
     ok: bool
@@ -903,45 +948,24 @@ class RewriteValidationResult:
     invented_sections: list = field(default_factory=list)
     wrong_house_claims: list = field(default_factory=list)
     unauthorized_personal_claims: list = field(default_factory=list)
-    # -- Παράρτημα: ΟΛΕΣ οι όψεις του χάρτη πρέπει να παραμένουν εκεί, με
-    # σωστό ζεύγος/τύπο/orb/βαρύτητα (η μοναδική πηγή δεδομένων, κανόνας 3Α
-    # της βασικής εντολής -- δεν επιτρέπεται καμία απλοποίηση εκεί).
-    missing_appendix_aspects: list = field(default_factory=list)
-    suspect_appendix_aspects: list = field(default_factory=list)
-    wrong_appendix_type: list = field(default_factory=list)
-    wrong_appendix_weight: list = field(default_factory=list)
-    # -- Υποχρεωτικές όψεις (τετράγωνα/αντιθέσεις/σύνοδοι με γωνία): πρέπει
-    # να εμφανίζονται σωστά ΚΑΠΟΥ στο κείμενο (όχι απαραίτητα σε κάθε Οίκο
-    # ξεχωριστά -- αυτό είναι αρμοδιότητα του validate_analysis, όχι εδώ).
-    missing_mandatory_aspects: list = field(default_factory=list)
-    suspect_mandatory_aspects: list = field(default_factory=list)
-    # -- Συνέπεια τύπου/βαρύτητας ΟΠΟΥ ΚΙ ΑΝ επιλέξει η αναδιατύπωση να
-    # αναφέρει ρητά μια όψη (σώμα ή Παράρτημα) -- συμπεριλαμβάνει και τα
-    # ευρήματα των δύο παραπάνω ελέγχων, οπότε είναι το πληρέστερο σύνολο.
-    wrong_aspect_type: list = field(default_factory=list)
-    wrong_weight: list = field(default_factory=list)
-    # -- orb που εμφανίζεται στο κείμενο αλλά δεν αντιστοιχεί σε ΚΑΜΙΑ
-    # πραγματική όψη του χάρτη (πιθανό επινοημένο/αλλοιωμένο νούμερο).
-    invented_orbs: list = field(default_factory=list)
+    # (κατηγορία, πρόταση): τεχνικά αστρολογικά δεδομένα που ο πελάτης δεν
+    # πρέπει να βλέπει (μοίρες, orb, βαρύτητες, Παράρτημα, πηγή).
+    technical_data: list = field(default_factory=list)
+    missing_closing_sentence: bool = False
 
     def summary(self) -> str:
         if self.ok:
-            return "✓ Η τελική αναδιατύπωση πέρασε τον έλεγχο αμετάβλητων δεδομένων και πηγών (Οίκοι, ενότητες, υποχρεωτικές όψεις, Παράρτημα όψεων/orb/βαρύτητας, ανύπαρκτα orb)."
+            return ("✓ Η τελική αναδιατύπωση πέρασε τον έλεγχο: 12 Οίκοι, όλες οι ενότητες της πηγής, "
+                    "σωστές τοποθετήσεις, χωρίς τεχνικά αστρολογικά δεδομένα (μοίρες, orb, βαρύτητες, "
+                    "Παράρτημα) και με την υποχρεωτική τελική πρόταση.")
         counts = []
         if self.missing_houses: counts.append(f"λείπουν Οίκοι: {', '.join(map(str, self.missing_houses))}")
         if self.missing_source_sections: counts.append("λείπουν υποχρεωτικές ενότητες της πηγής: " + ", ".join(self.missing_source_sections))
         if self.invented_sections: counts.append("προστέθηκαν ενότητες που δεν υπήρχαν στην πηγή: " + ", ".join(self.invented_sections))
         if self.wrong_house_claims: counts.append(f"{len(self.wrong_house_claims)} λανθασμένες τοποθετήσεις")
         if self.unauthorized_personal_claims: counts.append(f"{len(self.unauthorized_personal_claims)} μη εξουσιοδοτημένες προσωπικές αναφορές")
-        if self.missing_mandatory_aspects: counts.append(f"{len(self.missing_mandatory_aspects)} υποχρεωτικές όψεις εξαφανίστηκαν εντελώς")
-        if self.suspect_mandatory_aspects: counts.append(f"{len(self.suspect_mandatory_aspects)} υποχρεωτικές όψεις με ύποπτο orb")
-        if self.missing_appendix_aspects: counts.append(f"{len(self.missing_appendix_aspects)} όψεις λείπουν από το Παράρτημα")
-        if self.suspect_appendix_aspects: counts.append(f"{len(self.suspect_appendix_aspects)} όψεις με ύποπτο orb στο Παράρτημα")
-        if self.wrong_appendix_type: counts.append(f"{len(self.wrong_appendix_type)} λανθασμένοι τύποι όψης στο Παράρτημα")
-        if self.wrong_appendix_weight: counts.append(f"{len(self.wrong_appendix_weight)} λανθασμένες κατηγορίες βαρύτητας στο Παράρτημα")
-        if self.wrong_aspect_type: counts.append(f"{len(self.wrong_aspect_type)} λανθασμένοι τύποι όψης συνολικά")
-        if self.wrong_weight: counts.append(f"{len(self.wrong_weight)} λανθασμένες κατηγορίες βαρύτητας συνολικά")
-        if self.invented_orbs: counts.append(f"{len(self.invented_orbs)} ανύπαρκτα orb: {', '.join(self.invented_orbs)}")
+        if self.technical_data: counts.append(f"{len(self.technical_data)} σημεία με τεχνικά αστρολογικά δεδομένα που δεν πρέπει να βλέπει ο πελάτης")
+        if self.missing_closing_sentence: counts.append("λείπει ή έχει αλλοιωθεί η υποχρεωτική τελική πρόταση")
         return "Η αναδιατύπωση απορρίφθηκε: " + "· ".join(counts) + "."
 
     def details_lines(self) -> list[str]:
@@ -953,92 +977,50 @@ class RewriteValidationResult:
             lines.append(f"Λανθασμένη τοποθέτηση — {point_name}: δηλώνεται στον {claimed}ο αντί στον {expected}ο Οίκο. Σημείο: {snippet}")
         for category, snippet in self.unauthorized_personal_claims:
             lines.append(f"Μη δηλωμένο προσωπικό στοιχείο ({category}): «{snippet}»")
-        for a in self.missing_mandatory_aspects:
-            lines.append(f"Υποχρεωτική όψη {a.first}–{a.second} ({a.aspect}, orb {a.orb_text}) δεν εντοπίζεται πουθενά στην αναδιατύπωση.")
-        for a in self.suspect_mandatory_aspects:
-            lines.append(f"Υποχρεωτική όψη {a.first}–{a.second}: αναφέρονται και τα δύο ονόματα, αλλά όχι το orb {a.orb_text} κοντά -- έλεγξε χειροκίνητα.")
-        for a in self.missing_appendix_aspects:
-            lines.append(f"Παράρτημα: η όψη {a.first}–{a.second} ({a.aspect}, orb {a.orb_text}) δεν εντοπίστηκε εκεί.")
-        for a in self.suspect_appendix_aspects:
-            lines.append(f"Παράρτημα: {a.first}–{a.second} αναφέρονται, αλλά όχι το orb {a.orb_text} κοντά τους -- έλεγξε χειροκίνητα.")
-        for a in self.wrong_appendix_type:
-            lines.append(f"Παράρτημα: {a.first}–{a.second} έχει λανθασμένο ή απόντα τύπο όψης (αναμενόταν «{a.aspect}»).")
-        for a in self.wrong_appendix_weight:
-            lines.append(f"Παράρτημα: {a.first}–{a.second} έχει λανθασμένη ή απούσα κατηγορία βαρύτητας (αναμενόταν «{a.weight}»).")
-        for a in self.wrong_aspect_type:
-            lines.append(f"{a.first}–{a.second}: αναμενόταν τύπος «{a.aspect}» όπου εμφανίζεται το orb {a.orb_text} στο κείμενο, αλλά βρέθηκε άλλος.")
-        for a in self.wrong_weight:
-            lines.append(f"{a.first}–{a.second}: αναμενόταν βαρύτητα «{a.weight}» όπου εμφανίζεται το orb {a.orb_text} στο κείμενο, αλλά βρέθηκε άλλη.")
-        for raw_orb in self.invented_orbs:
-            lines.append(f"Το orb {raw_orb} εμφανίζεται στο κείμενο αλλά δεν αντιστοιχεί σε καμία πραγματική όψη του ελεγμένου χάρτη.")
+        shown = self.technical_data[:40]
+        for category, sentence in shown:
+            lines.append(f"Τεχνικό δεδομένο ({category}) — να αφαιρεθεί από το έντυπο του πελάτη: «{sentence}»")
+        if len(self.technical_data) > len(shown):
+            lines.append(f"…και {len(self.technical_data) - len(shown)} ακόμη σημεία με τεχνικά δεδομένα "
+                         "(συνήθως γραμμές πίνακα/Παραρτήματος όψεων).")
+        if self.missing_closing_sentence:
+            lines.append("Η τελευταία πρόταση του εγγράφου πρέπει να είναι αυτούσια: «" + _CLOSING_SENTENCE + "»")
         return lines
 
 
 def validate_rewrite(chart, source_text: str, rewrite_text: str,
                      personal: dict | None = None) -> RewriteValidationResult:
-    # Κανονικοποίηση ' -> ′ ΠΡΙΝ από οτιδήποτε άλλο -- κάθε downstream
-    # slicing (Παράρτημα, per-house τμήματα) κληρονομεί ήδη κανονικοποιημένο
-    # κείμενο. Το source_text κανονικοποιείται κι αυτό για συμμετρία, παρότι
-    # δεν χρησιμοποιείται για ταίριασμα orb σε αυτή τη συνάρτηση.
+    """Έλεγχος του τελικού εντύπου πελάτη.
+
+    Η πηγή (ελεγμένο τεχνικό Word) περιέχει τα τεχνικά δεδομένα και το
+    Παράρτημα· η αναδιατύπωση ΔΕΝ πρέπει να τα περιέχει. Ελέγχεται ότι:
+    υπάρχουν οι 12 Οίκοι και οι ερμηνευτικές ενότητες της πηγής, δεν
+    προστέθηκαν νέες ενότητες, δεν υπάρχουν λάθος τοποθετήσεις πλανητών ή
+    μη δηλωμένα προσωπικά στοιχεία, δεν εμφανίζονται μοίρες/orb/βαρύτητες/
+    Παράρτημα και το έγγραφο κλείνει με την υποχρεωτική πρόταση.
+    """
     source_text = _normalize_prime_marks(source_text)
     rewrite_text = _normalize_prime_marks(rewrite_text)
     missing_houses = [n for n in range(1, 13)
                       if not (_HOUSE_PATTERNS[n - 1].search(rewrite_text)
                               or _HOUSE_PATTERNS_ALT[n - 1].search(rewrite_text))]
-    tracked_sections = list(_SECTION_PATTERNS)
+    # Το Παράρτημα δεν μεταφέρεται στο έντυπο πελάτη -- ελέγχεται ξεχωριστά
+    # ως τεχνικό δεδομένο, όχι ως ενότητα που «λείπει».
+    tracked_sections = [s for s in _SECTION_PATTERNS if not s.startswith("Παράρτημα")]
     source_has = {s: bool(re.search(_SECTION_PATTERNS[s], source_text, re.IGNORECASE)) for s in tracked_sections}
     rewrite_has = {s: bool(re.search(_SECTION_PATTERNS[s], rewrite_text, re.IGNORECASE)) for s in tracked_sections}
     missing_source_sections = [s for s in tracked_sections if source_has[s] and not rewrite_has[s]]
     invented_sections = [s for s in tracked_sections if not source_has[s] and rewrite_has[s]]
     wrong_house_claims = _location_claim_errors(chart, rewrite_text)
     unauthorized = _unauthorized_personal_claims(personal, rewrite_text)
-
-    # 1) Υποχρεωτικές όψεις (τετράγωνα/αντιθέσεις/σύνοδοι με γωνία) πρέπει
-    # να παραμένουν σωστές ΚΑΠΟΥ στο κείμενο -- δεν ελέγχεται εδώ ανά Οίκο
-    # (αυτό είναι δουλειά του validate_analysis, πριν καν φτάσει η ανάλυση
-    # στο στάδιο της αναδιατύπωσης).
-    mandatory = _mandatory_aspects(chart)
-    missing_mandatory, suspect_mandatory, wrong_mandatory_type, wrong_mandatory_weight = \
-        _check_aspects_present(rewrite_text, mandatory)
-
-    # 2) Το Παράρτημα -- μοναδική πηγή δεδομένων -- πρέπει να περιέχει
-    # ΟΛΕΣ τις όψεις του χάρτη, ακριβώς όπως στην πηγή. Δεν επιτρέπεται η
-    # απλοποίηση του κανόνα 1 (λιγότερη τεχνική ορολογία στο "σώμα") να
-    # επεκταθεί και στο Παράρτημα.
-    missing_appendix, suspect_appendix, wrong_appendix_type, wrong_appendix_weight = \
-        _appendix_technical_errors(chart, rewrite_text)
-
-    # 3) Όπου κι αν επιλέξει το κείμενο (σώμα ή Παράρτημα) να αναφέρει
-    # ρητά μια όψη με το orb της, ο τύπος/βαρύτητα πρέπει να συμφωνούν με
-    # τα ελεγμένα δεδομένα. Δεν απαιτεί να επαναληφθεί κάθε όψη στο σώμα.
-    wrong_aspect_type = _dedupe_aspects(wrong_mandatory_type, wrong_appendix_type)
-    wrong_weight = _dedupe_aspects(wrong_mandatory_weight, wrong_appendix_weight)
-    for a in chart.aspects:
-        bad_type, bad_weight = _contradicts_aspect(rewrite_text, a)
-        strict_bad_type, strict_bad_weight = _strict_occurrence_errors(rewrite_text, a)
-        if (bad_type or strict_bad_type) and a not in wrong_aspect_type:
-            wrong_aspect_type.append(a)
-        if (bad_weight or strict_bad_weight) and a not in wrong_weight:
-            wrong_weight.append(a)
-
-    # 4) Ανύπαρκτα orb -- δεν είναι αλλοίωση υπαρκτής όψης, είναι νούμερο
-    # που δεν υπάρχει καθόλου στο registry του χάρτη.
-    invented_orbs = _invented_orbs(chart, rewrite_text)
+    technical = _client_technical_data(rewrite_text)
+    missing_closing = not _has_closing_sentence(rewrite_text)
 
     ok = not (missing_houses or missing_source_sections or invented_sections
-              or wrong_house_claims or unauthorized
-              or missing_mandatory or suspect_mandatory
-              or missing_appendix or suspect_appendix
-              or wrong_appendix_type or wrong_appendix_weight
-              or wrong_aspect_type or wrong_weight
-              or invented_orbs)
+              or wrong_house_claims or unauthorized or technical or missing_closing)
     return RewriteValidationResult(
         ok, missing_houses, missing_source_sections, invented_sections,
-        wrong_house_claims, unauthorized,
-        missing_appendix, suspect_appendix, wrong_appendix_type, wrong_appendix_weight,
-        missing_mandatory, suspect_mandatory,
-        wrong_aspect_type, wrong_weight,
-        invented_orbs,
+        wrong_house_claims, unauthorized, technical, missing_closing,
     )
 
 

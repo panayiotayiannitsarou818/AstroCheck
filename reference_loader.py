@@ -21,12 +21,29 @@ def docx_text(source) -> str:
     if isinstance(source, (bytes, bytearray)):
         source = io.BytesIO(source)
     document = Document(source)
-    blocks = [p.text.strip() for p in document.paragraphs if p.text.strip()]
-    for table in document.tables:
-        for row in table.rows:
-            line = " | ".join(cell.text.strip() for cell in row.cells)
-            if line.strip(" |"):
-                blocks.append(line)
+    # Διατηρείται η ΣΕΙΡΑ του εγγράφου (παράγραφοι και πίνακες όπως
+    # εμφανίζονται). Παλαιότερα οι πίνακες προστίθεντο όλοι στο τέλος, οπότε
+    # π.χ. η υποχρεωτική τελική πρόταση φαινόταν να μην είναι τελευταία και
+    # τα πλαίσια σύνοψης αποκόπτονταν από τον Οίκο τους.
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
+    blocks = []
+    for child in document.element.body.iterchildren():
+        tag = child.tag.rsplit("}", 1)[-1]
+        if tag == "p":
+            text = Paragraph(child, document).text.strip()
+            if text:
+                blocks.append(text)
+        elif tag == "tbl":
+            for row in Table(child, document).rows:
+                cells = []
+                for cell in row.cells:
+                    t = cell.text.strip()
+                    if not cells or cells[-1] != t:  # συγχωνευμένα κελιά επαναλαμβάνονται
+                        cells.append(t)
+                line = " | ".join(cells)
+                if line.strip(" |"):
+                    blocks.append(line)
     return "\n".join(blocks)
 
 
