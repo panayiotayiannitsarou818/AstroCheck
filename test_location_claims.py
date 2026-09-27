@@ -5,15 +5,19 @@ HOUSES = {"Ήλιος": 3, "Σελήνη": 10, "Άρης": 10, "Δίας": 11, "
 
 
 def _chart():
-    return Chart(points=[
-        Point("x", n, "", 0, 0, 0, 0.0, h, False, "node" if "Δεσμ" in n else "planet")
-        for n, h in HOUSES.items()
-    ])
+    return Chart(
+        points=[
+            Point("x", n, "", 0, 0, 0, 0.0, h, False, "node" if "Δεσμ" in n else "planet")
+            for n, h in HOUSES.items()
+        ]
+    )
 
 
 def test_relative_clause_belongs_to_nearest_point():
-    text = ("Ο Βόρειος Δεσμός στον Καρκίνο κυβερνάται από τη Σελήνη, η οποία "
-            "βρίσκεται στην Παρθένο 25°58′02″, στον 10ο Οίκο.")
+    text = (
+        "Ο Βόρειος Δεσμός στον Καρκίνο κυβερνάται από τη Σελήνη, η οποία "
+        "βρίσκεται στην Παρθένο 25°58′02″, στον 10ο Οίκο."
+    )
     assert V._location_claim_errors(_chart(), text) == []
 
 

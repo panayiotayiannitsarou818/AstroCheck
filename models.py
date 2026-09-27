@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field, asdict
 from typing import Optional
 
+
 @dataclass
 class Point:
     code: str
@@ -14,6 +15,7 @@ class Point:
     retrograde: bool = False
     kind: str = "planet"
 
+
 @dataclass
 class Aspect:
     first: str
@@ -24,6 +26,7 @@ class Aspect:
     weight: str
     source: str
     applying: Optional[bool] = None
+
 
 @dataclass
 class Chart:
@@ -39,4 +42,3 @@ class Chart:
 
     def to_dict(self):
         return asdict(self)
-

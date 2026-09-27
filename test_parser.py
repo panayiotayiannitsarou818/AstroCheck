@@ -19,6 +19,7 @@ hardcoded pixel συντεταγμένες πάνω στη σελίδα -- μι�
 αυτού του αρχείου. Το test_all_twelve_cusps_present παρακάτω αρκεί για να
 πιάσει μια τέτοια παλινδρόμηση χωρίς να χρειάζεται ξεχωριστό test.
 """
+
 from __future__ import annotations
 from pathlib import Path
 
@@ -85,11 +86,7 @@ def test_south_node_is_derived_mathematically(chart):
 
 
 def test_known_hard_aspect(chart):
-    hard = {
-        (a.first, a.second): a
-        for a in chart.aspects
-        if a.aspect in ("Τετράγωνο", "Αντίθεση")
-    }
+    hard = {(a.first, a.second): a for a in chart.aspects if a.aspect in ("Τετράγωνο", "Αντίθεση")}
     assert ("Άρης", "Ουρανός") in hard
     assert hard[("Άρης", "Ουρανός")].orb_text == "0°39′"
     assert hard[("Άρης", "Ουρανός")].weight == "Στενή/ισχυρή"
@@ -100,7 +97,8 @@ def test_angle_conjunction_detected(chart):
     # Μεσουράνημα πρέπει να ξεχωρίζει, ώστε ο validator να μπορεί να την
     # απαιτήσει υποχρεωτικά.
     angle_conjunctions = [
-        a for a in chart.aspects
+        a
+        for a in chart.aspects
         if a.aspect == "Σύνοδος"
         and (a.first in ("Ωροσκόπος", "Μεσουράνημα") or a.second in ("Ωροσκόπος", "Μεσουράνημα"))
     ]

@@ -22,6 +22,7 @@ st.session_state που χρησιμοποιείται). Το app.py καλεί 
 περνάνε ένα ελαφρύ ψεύτικο state, χωρίς να χρειάζεται καθόλου Streamlit
 runtime ή προσομοίωση file_uploader.
 """
+
 from __future__ import annotations
 
 # Keys που ανήκουν αποκλειστικά στον ΤΡΕΧΟΝΤΑ πελάτη/χάρτη και ΠΡΕΠΕΙ να
@@ -30,13 +31,22 @@ from __future__ import annotations
 # ΔΕΝ περιλαμβάνει 'chart' και 'uploader_gen': αυτά τα διαχειρίζεται ρητά
 # ο καλών (reset_case_state τα αφήνει σκόπιμα ανέγγιχτα).
 CASE_STATE_KEYS = (
-    'language', 'pasted_analysis', 'analysis_source',
-    'rewrite_validation', 'rewrite_docx_bytes', 'rewrite_docx_name',
+    "language",
+    "pasted_analysis",
+    "analysis_source",
+    "hide_birth",
+    "rewrite_validation",
+    "rewrite_docx_bytes",
+    "rewrite_docx_name",
+    "analysis_docx_hash",
+    "rewrite_docx_hash",
+    "rewrite_analysis_hash",
 )
 
 
 def _default_state():
     import streamlit as st
+
     return st.session_state
 
 
@@ -52,10 +62,10 @@ def reset_case_state(state=None) -> None:
     """
     if state is None:
         state = _default_state()
-    state.analysis = ''
+    state.analysis = ""
     state.validation = None
     state.analysis_docx_bytes = None
-    state.analysis_docx_name = ''
+    state.analysis_docx_name = ""
     for k in CASE_STATE_KEYS:
         state.pop(k, None)
 
@@ -94,6 +104,72 @@ def handle_pdf_upload(pdf_bytes: bytes, pdf_name: str, state=None, parse_fn=None
         return False, None, e
 
     reset_case_state(state)
-    state.uploader_gen = getattr(state, 'uploader_gen', 0) + 1
+    state.uploader_gen = getattr(state, "uploader_gen", 0) + 1
     state.chart = new_chart
     return True, new_chart, None
+
+
+# ---------------------------------------------------------------------------
+# Αποτελέσματα ελέγχου που αφορούν ΑΛΛΟ αρχείο από αυτό που είναι τώρα ανεβασμένο
+# ---------------------------------------------------------------------------
+# Περιστατικό: στο τελικό βήμα, αν ανέβαινε άλλο Word χωρίς νέο πάτημα
+# «Έλεγχος τελικού εντύπου», έμενε ορατό το ΠΡΟΗΓΟΥΜΕΝΟ επιτυχές αποτέλεσμα
+# μαζί με το ΠΡΟΗΓΟΥΜΕΝΟ αρχείο λήψης. Το ίδιο ίσχυε και στο βήμα 2 (Word
+# ανάλυσης). Τώρα κάθε αποτέλεσμα κρατά το «αποτύπωμα» (SHA-256) του αρχείου
+# που ελέγχθηκε, και ακυρώνεται μόλις το ανεβασμένο αρχείο είναι άλλο ή
+# αφαιρεθεί. Ο έλεγχος του εντύπου κρατά επίσης το αποτύπωμα της τεχνικής
+# ανάλυσης με την οποία συγκρίθηκε: αν αλλάξει η ανάλυση, ακυρώνεται κι αυτός.
+
+
+def fingerprint(data) -> str | None:
+    """SHA-256 περιεχομένου (bytes ή str), ή None όταν δεν υπάρχει."""
+    if data is None:
+        return None
+    import hashlib
+
+    if isinstance(data, str):
+        data = data.encode("utf-8")
+    return hashlib.sha256(bytes(data)).hexdigest()
+
+
+def _clear_rewrite(state) -> None:
+    state.rewrite_validation = None
+    state.rewrite_docx_bytes = None
+    state.rewrite_docx_name = ""
+    state.rewrite_docx_hash = None
+    state.rewrite_analysis_hash = None
+
+
+def _clear_docx_analysis(state) -> None:
+    state.analysis = ""
+    state.validation = None
+    state.analysis_docx_bytes = None
+    state.analysis_docx_name = ""
+    state.analysis_source = None
+    state.analysis_docx_hash = None
+
+
+def forget_stale_results(state=None, analysis_upload=None, rewrite_upload=None) -> list[str]:
+    """Ακυρώνει αποτελέσματα που δεν αντιστοιχούν πια στα ανεβασμένα αρχεία.
+
+    `analysis_upload`/`rewrite_upload`: τα bytes του αρχείου που είναι ΤΩΡΑ
+    επιλεγμένο σε κάθε file_uploader (None αν δεν υπάρχει). Επιστρέφει ποια
+    αποτελέσματα ακυρώθηκαν ("analysis", "rewrite"), για ενημέρωση του χρήστη.
+    """
+    if state is None:
+        state = _default_state()
+    cleared = []
+    if getattr(state, "analysis_source", None) == "docx" and getattr(
+        state, "analysis_docx_hash", None
+    ) != fingerprint(analysis_upload):
+        _clear_docx_analysis(state)
+        cleared.append("analysis")
+    if getattr(state, "rewrite_validation", None) is not None:
+        rewrite_changed = getattr(state, "rewrite_docx_hash", None) != fingerprint(rewrite_upload)
+        analysis_changed = getattr(state, "rewrite_analysis_hash", None) != fingerprint(
+            getattr(state, "analysis", "") or ""
+        )
+        if rewrite_changed or analysis_changed:
+            _clear_rewrite(state)
+            cleared.append("rewrite")
+    return cleared

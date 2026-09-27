@@ -1,43 +1,63 @@
+import dataclasses
+import re
 import streamlit as st
 import pandas as pd
 from pathlib import Path
 from prompts import build_master_prompt
 from docx_builder import build_audit_docx, build_analysis_docx
-from generator import generate_analysis
+from generator import DEFAULT_MAX_ROUNDS, DEFAULT_MODEL, generate_validated
 from reference_loader import (
-    docx_text, load_default_references,
+    docx_text,
+    load_default_references,
 )
 from validator import validate_analysis, validate_rewrite
-from case_state import reset_case_state, handle_pdf_upload
-
-FULL_ANALYSIS_PASTE_MESSAGE = """Σου επισυνάπτω ένα έγγραφο AstroCheck.
-
-Θεώρησε αποκλειστικά την ενότητα «Πλήρης εντολή για δημιουργία ανάλυσης», από τη φράση «ΔΕΣΜΕΥΤΙΚΗ ΕΝΤΟΛΗ» μέχρι το τέλος της, ως τη δεσμευτική σου εντολή.
-
-Ακολούθησε πιστά όλες τις οδηγίες και χρησιμοποίησε αποκλειστικά τα ελεγμένα αστρολογικά δεδομένα, τα προσωπικά στοιχεία που περιλαμβάνονται στο AstroCheck και όποιο άλλο υλικό επιτρέπεται ρητά από τη δεσμευτική εντολή. Μην επινοήσεις πληροφορίες, μη χρησιμοποιήσεις μνήμη ή προηγούμενες συνομιλίες και μην αντιγράψεις προσωπικά ή αστρολογικά στοιχεία από τον οδηγό ύφους.
-
-Δημιούργησε την πλήρη αστρολογική ανάλυση και παράδωσέ την σε ολοκληρωμένο, καλαίσθητο αρχείο Word. Πριν από την παράδοση, κάνε προσεκτικό αυτοέλεγχο συνέπειας των Οίκων, κυβερνητών, όψεων, orb, κατηγοριών βαρύτητας, προσωπικών στοιχείων και ενοτήτων. Μην δηλώσεις ότι «έτρεξες τον validator»· ο πραγματικός validator θα εκτελεστεί στη συνέχεια μέσα στο AstroCheck Pro."""
-
-REWRITE_PASTE_MESSAGE = """Σου επισυνάπτω δύο αρχεία: τη «Δεσμευτική Εντολή Τελικής Αναδιατύπωσης» και το AstroCheck_Analysi του/της {name}.
-
-Θεώρησε τη Δεσμευτική Εντολή ως τη μοναδική δεσμευτική οδηγία διαδικασίας και ακολούθησέ την πιστά και στο σύνολό της, χωρίς παρεκκλίσεις. Θεώρησε το AstroCheck_Analysi ως τη μοναδική πηγή αστρολογικού και ερμηνευτικού περιεχομένου. Μην επινοήσεις ή αλλάξεις κανένα αστρολογικό δεδομένο και μην παραλείψεις κανένα ουσιαστικό ερμηνευτικό νόημα. Επιτρέπεται μόνο η αναδιοργάνωση, αναδιατύπωση, σύνθεση και συγχώνευση του ήδη επαληθευμένου περιεχομένου, ακριβώς όπως ορίζει η Δεσμευτική Εντολή.
-
-Το τελικό έντυπο προορίζεται για τον πελάτη (κανόνας 20): μην εμφανίσεις μοίρες, orb, κατηγορίες βαρύτητας, Παράρτημα ή πίνακα όψεων, ενδείξεις πηγής ή ενότητες τεχνικού ελέγχου. Όπου η πηγή χρησιμοποιεί τεχνικό δεδομένο, κράτησε μόνο το ερμηνευτικό του νόημα.
-
-Παρήγαγε την πλήρη ανθρωποποιημένη ανάλυση σύμφωνα με όλους τους κανόνες της Δεσμευτικής Εντολής. Πριν παραδώσεις, πραγματοποίησε τον προβλεπόμενο τριπλό τελικό έλεγχο — ποιότητα → απώλεια → εφεύρεση — και βεβαιώσου ότι η τελευταία πρόταση του εγγράφου είναι αυτούσια η υποχρεωτική πρόταση του κανόνα 19. Παράδωσε το τελικό αποτέλεσμα σε πλήρες, καλαίσθητο αρχείο Word. Κάνε μόνο αυτοέλεγχο· ο πραγματικός μηχανικός validator θα εκτελεστεί στη συνέχεια στο AstroCheck Pro."""
+from case_state import fingerprint, forget_stale_results, handle_pdf_upload, reset_case_state
+from ui_texts import FULL_ANALYSIS_PASTE_MESSAGE, REWRITE_PASTE_MESSAGE, REWRITE_ENGLISH_ADDENDUM
 
 st.set_page_config(page_title="AstroCheck Pro", page_icon="✦", layout="wide")
-st.markdown("""<style>
-.stApp{background:#f5f7f3}.block-container{max-width:1180px;padding-top:2rem}.hero{background:#19332f;color:white;border-radius:22px;padding:30px 34px;margin-bottom:18px}.hero h1{margin:0 0 8px;font-family:Georgia;font-size:42px}.hero p{color:#dce8e2}.ok{padding:14px 16px;background:#e5f2e7;border-left:5px solid #39704c;border-radius:8px}.warn{padding:14px 16px;background:#fff1dd;border-left:5px solid #b7791f;border-radius:8px}div[data-testid="stMetric"]{background:white;border:1px solid #dce4df;padding:12px;border-radius:12px}.step-done{color:#2f6b46;font-weight:600}.step-pending{color:#8a8f8c}.step-warn{color:#b7791f;font-weight:600}</style>""",unsafe_allow_html=True)
-st.markdown('<div class="hero"><h1>AstroCheck Pro</h1><p>Ανέβασε το Astrodienst PDF, δημιούργησε την ανάλυση και κατέβασε το τελικό Word.</p></div>',unsafe_allow_html=True)
+# Στυλ της εφαρμογής. Γράφεται ένας κανόνας ανά γραμμή για να διαβάζεται,
+# αλλά οι γραμμές ενώνονται σε ΕΝΑ ενιαίο κείμενο -- ακριβώς όπως πριν --
+# ώστε το Markdown του Streamlit να μην το ερμηνεύσει ως μπλοκ κώδικα.
+APP_CSS = (
+    "<style>\n"
+    ".stApp{background:#f5f7f3}"
+    ".block-container{max-width:1180px;padding-top:2rem}"
+    # Πάνω πλαίσιο με τον τίτλο
+    ".hero{background:#19332f;color:white;border-radius:22px;padding:30px 34px;margin-bottom:18px}"
+    ".hero h1{margin:0 0 8px;font-family:Georgia;font-size:42px}"
+    ".hero p{color:#dce8e2}"
+    # Πράσινο (επιτυχία) και πορτοκαλί (προειδοποίηση) πλαίσιο μηνύματος
+    ".ok{padding:14px 16px;background:#e5f2e7;border-left:5px solid #39704c;border-radius:8px}"
+    ".warn{padding:14px 16px;background:#fff1dd;border-left:5px solid #b7791f;border-radius:8px}"
+    'div[data-testid="stMetric"]{background:white;border:1px solid #dce4df;padding:12px;border-radius:12px}'
+    # Κατάσταση βημάτων
+    ".step-done{color:#2f6b46;font-weight:600}"
+    ".step-pending{color:#8a8f8c}"
+    ".step-warn{color:#b7791f;font-weight:600}"
+    "</style>"
+)
+st.markdown(APP_CSS, unsafe_allow_html=True)
+st.markdown(
+    '<div class="hero"><h1>AstroCheck Pro</h1><p>Ανέβασε το Astrodienst PDF, δημιούργησε την ανάλυση και κατέβασε το τελικό Word.</p></div>',
+    unsafe_allow_html=True,
+)
 
-if 'chart' not in st.session_state: st.session_state.chart=None
-if 'analysis' not in st.session_state: st.session_state.analysis=''
-if 'validation' not in st.session_state: st.session_state.validation=None
-if 'analysis_docx_bytes' not in st.session_state: st.session_state.analysis_docx_bytes=None
-if 'analysis_docx_name' not in st.session_state: st.session_state.analysis_docx_name=''
-if 'rewrite_validation' not in st.session_state: st.session_state.rewrite_validation=None
-if 'uploader_gen' not in st.session_state: st.session_state.uploader_gen=0  # αλλάζει τα keys των uploaders ώστε το "Νέα ανάλυση" να τους αδειάζει πραγματικά
+if "chart" not in st.session_state:
+    st.session_state.chart = None
+if "analysis" not in st.session_state:
+    st.session_state.analysis = ""
+if "validation" not in st.session_state:
+    st.session_state.validation = None
+if "analysis_docx_bytes" not in st.session_state:
+    st.session_state.analysis_docx_bytes = None
+if "analysis_docx_name" not in st.session_state:
+    st.session_state.analysis_docx_name = ""
+if "rewrite_validation" not in st.session_state:
+    st.session_state.rewrite_validation = None
+if "uploader_gen" not in st.session_state:
+    st.session_state.uploader_gen = (
+        0  # αλλάζει τα keys των uploaders ώστε το "Νέα ανάλυση" να τους αδειάζει πραγματικά
+    )
 
 # Τα tabs του Streamlit δεν άλλαζαν αυτόματα μετά την ανάγνωση ενός PDF.
 # Έτσι ο χρήστης έβλεπε ότι ο χάρτης είχε φορτωθεί, αλλά παρέμενε στην
@@ -45,6 +65,20 @@ if 'uploader_gen' not in st.session_state: st.session_state.uploader_gen=0  # α
 # από τα κουμπιά και εφαρμόζεται ΠΡΙΝ δημιουργηθεί το widget των tabs.
 if st.session_state.get("_requested_main_tab"):
     st.session_state.main_tab = st.session_state.pop("_requested_main_tab")
+
+
+def _current_upload_bytes(prefix: str):
+    upload = st.session_state.get(f"{prefix}_{st.session_state.uploader_gen}")
+    return upload.getvalue() if upload is not None else None
+
+
+# Αν το ανεβασμένο Word άλλαξε ή αφαιρέθηκε μετά τον έλεγχο, το παλιό
+# αποτέλεσμα και το παλιό αρχείο λήψης ακυρώνονται ΠΡΙΝ εμφανιστεί οτιδήποτε
+# (και η λίστα βημάτων στο πλάι). Βλ. case_state.forget_stale_results.
+_stale = forget_stale_results(
+    analysis_upload=_current_upload_bytes("analysis_docx"),
+    rewrite_upload=_current_upload_bytes("rewrite_docx"),
+)
 
 
 def _error_with_details(validation, suffix: str) -> None:
@@ -58,9 +92,12 @@ def _error_with_details(validation, suffix: str) -> None:
     st.error(body)
     if lines:
         with st.expander("📋 Κείμενο διόρθωσης για επικόλληση στο ChatGPT/Claude"):
-            st.code("Ο έλεγχος AstroCheck εντόπισε τα εξής. Διόρθωσε ΜΟΝΟ αυτά τα σημεία, "
-                    "χωρίς να αλλάξεις όψεις, orb, βαρύτητες ή ενότητες, και παράδωσε ξανά "
-                    "ολόκληρο το Word:\n" + "\n".join(f"- {l}" for l in lines), language=None)
+            st.code(
+                "Ο έλεγχος AstroCheck εντόπισε τα εξής. Διόρθωσε ΜΟΝΟ αυτά τα σημεία, "
+                "χωρίς να αλλάξεις όψεις, orb, βαρύτητες ή ενότητες, και παράδωσε ξανά "
+                "ολόκληρο το Word:\n" + "\n".join(f"- {l}" for l in lines),
+                language=None,
+            )
 
 
 TAB_ANALYSIS = "2 · Ανάλυση & έλεγχος"
@@ -86,23 +123,101 @@ def _analysis_result_panel(source: str, chart_name: str) -> None:
         else:
             final_doc = build_analysis_docx(chart_name, st.session_state.analysis)
             final_name = "Pliris_Astrologiki_Analysi.docx"
-        st.download_button("⬇️ Λήψη ελεγμένης πλήρους ανάλυσης (Word)", final_doc,
-                           file_name=final_name, type="primary", width="stretch",
-                           key=f"download_analysis_{source}")
-        st.button("Συνέχεια στην Τελική αναδιατύπωση →", width="stretch",
-                  on_click=_request_main_tab, args=("3 · Τελική αναδιατύπωση",),
-                  key=f"to_rewrite_{source}")
+        st.download_button(
+            "⬇️ Λήψη ελεγμένης πλήρους ανάλυσης (Word)",
+            final_doc,
+            file_name=final_name,
+            type="primary",
+            width="stretch",
+            key=f"download_analysis_{source}",
+        )
+        st.button(
+            "Συνέχεια στην Τελική αναδιατύπωση →",
+            width="stretch",
+            on_click=_request_main_tab,
+            args=("3 · Τελική αναδιατύπωση",),
+            key=f"to_rewrite_{source}",
+        )
     else:
-        suffix = ("Το Word απορρίφθηκε και η λήψη παραμένει κλειδωμένη."
-                  if source == "docx" else "Η λήψη παραμένει κλειδωμένη.")
+        suffix = (
+            "Το Word απορρίφθηκε και η λήψη παραμένει κλειδωμένη."
+            if source == "docx"
+            else "Η λήψη παραμένει κλειδωμένη."
+        )
         _error_with_details(validation, suffix)
     with st.expander("Προεπισκόπηση κειμένου ανάλυσης"):
-        st.text_area("Κείμενο ανάλυσης", st.session_state.analysis, height=380,
-                     label_visibility="collapsed", key=f"preview_{source}")
+        st.text_area(
+            "Κείμενο ανάλυσης",
+            st.session_state.analysis,
+            height=380,
+            label_visibility="collapsed",
+            key=f"preview_{source}",
+        )
+
+
+BIRTH_HIDDEN = "Δεν κοινοποιείται"
+
+
+def _initials(name: str) -> str:
+    """Αρχικά από το όνομα του PDF, π.χ. «Elena Kakouli» → «E.K.».
+    Αν το «όνομα» είναι στην πραγματικότητα όνομα αρχείου (δεν υπήρχε όνομα
+    στο PDF), επιστρέφεται το ουδέτερο «Πελάτης»."""
+    name = (name or "").strip()
+    if not name or "_" in name or re.search(r"\d", name):
+        return "Πελάτης"
+    words = re.findall(r"[^\W\d_]+", name)
+    return "".join(w[0].upper() + "." for w in words[:3]) or "Πελάτης"
+
+
+def _shared_chart(chart):
+    """Ο χάρτης όπως θα φύγει προς ChatGPT/Claude/OpenAI και στα έγγραφα.
+
+    Απόρρητο εξ ορισμού, χωρίς ερωτήσεις: το όνομα αντικαθίσταται ΠΑΝΤΑ με
+    τα αρχικά και τα γενέθλια στοιχεία αποκρύπτονται, εκτός αν ο χρήστης
+    επιλέξει ρητά να εμφανίζονται. Οι αστρολογικές θέσεις, οι Οίκοι και οι
+    όψεις μένουν ΑΚΡΙΒΩΣ ίδια· ο αρχικός χάρτης δεν τροποποιείται.
+    """
+    if chart is None:
+        return None
+    name = _initials(chart.name)
+    if st.session_state.get("hide_birth", True):
+        return dataclasses.replace(
+            chart, name=name, date=BIRTH_HIDDEN, time=BIRTH_HIDDEN, place=BIRTH_HIDDEN
+        )
+    return dataclasses.replace(chart, name=name)
+
+
+def _privacy_panel(original) -> None:
+    """Ενημέρωση απορρήτου. Δεν χρειάζεται καμία ενέργεια: η προστασία
+    εφαρμόζεται αυτόματα."""
+    if "hide_birth" not in st.session_state:
+        st.session_state.hide_birth = True
+    with st.expander("🔒 Απόρρητο πελάτη (εφαρμόζεται αυτόματα)", expanded=False):
+        st.markdown(
+            f"Σε ό,τι στέλνεται στο ChatGPT, στο Claude ή στην OpenAI και στα έγγραφα, το όνομα "
+            f"αντικαθίσταται αυτόματα με τα αρχικά **{_initials(original.name)}**. Αν θέλεις "
+            f"το πραγματικό όνομα στο τελικό έντυπο του πελάτη, πρόσθεσέ το στο Word πριν το "
+            f"παραδώσεις. Οι θέσεις, οι Οίκοι και οι όψεις μένουν πάντα πλήρεις."
+        )
+        st.checkbox(
+            "Απόκρυψη ημερομηνίας, ώρας και τόπου γέννησης",
+            key="hide_birth",
+            help=f"Προεπιλογή: ενεργό. Στη θέση τους γράφεται «{BIRTH_HIDDEN}». Η ανάλυση "
+            "δεν επηρεάζεται, γιατί τα αστρολογικά δεδομένα έχουν ήδη υπολογιστεί από το PDF.",
+        )
+
+
+def _secret(name: str) -> str:
+    """Τιμή από τα Streamlit secrets, ή κενό αν δεν έχουν οριστεί."""
+    try:
+        return str(st.secrets.get(name, "") or "").strip()
+    except Exception:
+        return ""
 
 
 def _request_main_tab(label: str) -> None:
     st.session_state._requested_main_tab = label
+
 
 # reset_case_state()/handle_pdf_upload() ζουν στο case_state.py -- εξήχθησαν
 # από εδώ ώστε να είναι ελέγξιμα με απλά unit tests (βλ. tests/test_case_state.py),
@@ -115,8 +230,16 @@ except Exception as e:
     st.stop()
 
 chart_ready = st.session_state.chart is not None
-analysis_ok = bool(st.session_state.analysis) and st.session_state.validation is not None and st.session_state.validation.ok
-analysis_warn = bool(st.session_state.analysis) and st.session_state.validation is not None and not st.session_state.validation.ok
+analysis_ok = (
+    bool(st.session_state.analysis)
+    and st.session_state.validation is not None
+    and st.session_state.validation.ok
+)
+analysis_warn = (
+    bool(st.session_state.analysis)
+    and st.session_state.validation is not None
+    and not st.session_state.validation.ok
+)
 
 with st.sidebar:
     st.header("Πρόοδος")
@@ -133,12 +256,18 @@ with st.sidebar:
 
     _step("1. PDF και αρχεία", chart_ready)
     _step("2. Δημιουργία & έλεγχος πληρότητας", analysis_ok, warn=analysis_warn)
-    _step("3. Τελική αναδιατύπωση", bool(st.session_state.rewrite_validation and st.session_state.rewrite_validation.ok))
+    _step(
+        "3. Τελική αναδιατύπωση",
+        bool(st.session_state.rewrite_validation and st.session_state.rewrite_validation.ok),
+    )
 
     st.divider()
     st.caption("Τα δεδομένα επεξεργάζονται στη συνεδρία και δεν αποθηκεύονται από την εφαρμογή.")
-    if st.button("🔄 Νέα ανάλυση (καθαρισμός όλων)", width="stretch",
-                 help="Καθαρίζει τον χάρτη και τις αναλύσεις, ώστε να ξεκινήσεις με άλλο άτομο."):
+    if st.button(
+        "🔄 Νέα ανάλυση (καθαρισμός όλων)",
+        width="stretch",
+        help="Καθαρίζει τον χάρτη και τις αναλύσεις, ώστε να ξεκινήσεις με άλλο άτομο.",
+    ):
         st.session_state.chart = None
         st.session_state.uploader_gen += 1  # αναγκάζει τους file_uploader να ξαναγίνουν "άδειοι"
         reset_case_state()
@@ -149,16 +278,22 @@ MAIN_TABS = ["1 · Αρχεία", TAB_ANALYSIS, "3 · Τελική αναδια�
 # που καταργήθηκε) επιστρέφει με ασφάλεια στην πρώτη καρτέλα.
 if st.session_state.get("main_tab") not in (None, *MAIN_TABS):
     st.session_state.main_tab = "1 · Αρχεία"
-tab1,tab4,tab6=st.tabs(MAIN_TABS, key="main_tab", default="1 · Αρχεία")
+tab1, tab4, tab6 = st.tabs(MAIN_TABS, key="main_tab", default="1 · Αρχεία")
 
 with tab1:
     st.subheader("Ανέβασε μόνο το νέο PDF")
     st.success("✓ Οι οδηγίες και ο οδηγός ύφους είναι ενσωματωμένα.")
-    pdf=st.file_uploader("Νέο Astrodienst Data Sheet",type=['pdf'],key=f"pdf_{st.session_state.uploader_gen}")
+    pdf = st.file_uploader(
+        "Νέο Astrodienst Data Sheet", type=["pdf"], key=f"pdf_{st.session_state.uploader_gen}"
+    )
     with st.expander("Προχωρημένα: προαιρετική προσωρινή αντικατάσταση"):
-        instructions=st.file_uploader("Νεότερες οδηγίες",type=['docx'],key=f"instructions_{st.session_state.uploader_gen}")
-        style=st.file_uploader("Νεότερο πρότυπο ύφους",type=['docx'],key=f"style_{st.session_state.uploader_gen}")
-    if pdf and st.button("Ανάγνωση και έλεγχος PDF",type="primary",width="stretch"):
+        instructions = st.file_uploader(
+            "Νεότερες οδηγίες", type=["docx"], key=f"instructions_{st.session_state.uploader_gen}"
+        )
+        style = st.file_uploader(
+            "Νεότερο πρότυπο ύφους", type=["docx"], key=f"style_{st.session_state.uploader_gen}"
+        )
+    if pdf and st.button("Ανάγνωση και έλεγχος PDF", type="primary", width="stretch"):
         with st.spinner("Διαβάζεται το PDF…"):
             ok, new_chart, err = handle_pdf_upload(pdf.getvalue(), pdf.name)
             # Η λογική "διάβασε -> καθάρισε προηγούμενη περίπτωση -> bump
@@ -171,10 +306,17 @@ with tab1:
                 st.success("✓ Το PDF διαβάστηκε. Συνέχισε στην καρτέλα «2 · Ανάλυση & έλεγχος» →")
                 st.rerun()
             else:
-                st.error("Η ανάγνωση σταμάτησε με ασφάλεια — το PDF μπορεί να μην είναι το σωστό Astrodienst Data Sheet, ή η μορφή του διαφέρει.")
-                with st.expander("Τεχνική λεπτομέρεια"): st.code(str(err))
+                st.error(
+                    "Η ανάγνωση σταμάτησε με ασφάλεια — το PDF μπορεί να μην είναι το σωστό Astrodienst Data Sheet, ή η μορφή του διαφέρει."
+                )
+                with st.expander("Τεχνική λεπτομέρεια"):
+                    st.code(str(err))
     if st.session_state.chart and not pdf:
-        st.info(f"Ήδη ελεγμένος χάρτης στη συνεδρία: **{st.session_state.chart.name}**. Ανέβασε νέο PDF μόνο αν θέλεις να τον αντικαταστήσεις, ή πάτα «🔄 Νέα ανάλυση» στο πλάι.")
+        st.info(
+            f"Ήδη ελεγμένος χάρτης στη συνεδρία: **{st.session_state.chart.name}**. "
+            "Ανέβασε νέο PDF μόνο αν θέλεις να τον αντικαταστήσεις, "
+            "ή πάτα «🔄 Νέα ανάλυση» στο πλάι."
+        )
         st.button(
             "Συνέχεια στην Ανάλυση & έλεγχο →",
             type="primary",
@@ -182,30 +324,61 @@ with tab1:
             on_click=_request_main_tab,
             args=(TAB_ANALYSIS,),
         )
+    if st.session_state.chart:
+        _privacy_panel(st.session_state.chart)
 
-instructions_text = docx_text(instructions.getvalue()) if instructions else default_instructions_text
+instructions_text = (
+    docx_text(instructions.getvalue()) if instructions else default_instructions_text
+)
 style_text = docx_text(style.getvalue()) if style else default_style_text
 instructions_name = instructions.name if instructions else "Ενσωματωμένες οδηγίες v5.3"
 style_name = style.name if style else "Ενσωματωμένος καθαρός οδηγός ύφους"
 
-chart=st.session_state.chart
+# Ό,τι ακολουθεί (εντολή, έγγραφα, μηνύματα) χρησιμοποιεί τον χάρτη με τις
+# επιλογές απορρήτου εφαρμοσμένες.
+chart = _shared_chart(st.session_state.chart)
 with tab4:
     st.subheader("Δημιουργία και έλεγχος πλήρους ανάλυσης")
-    language=st.selectbox("Γλώσσα τελικής ανάλυσης", ["Ελληνικά", "Αγγλικά"], key="language")
-    personal={"Όνομα":chart.name if chart else ""}
-    prompt=''
+    # Προειδοποιήσεις του parser (π.χ. δεν αναγνωρίστηκαν δυναμικές όψεις)
+    # εμφανίζονται πάντα -- πριν δεν φαίνονταν πουθενά.
+    for _w in getattr(st.session_state.chart, "warnings", None) or []:
+        st.warning("⚠️ " + _w)
+    language = st.selectbox("Γλώσσα τελικής ανάλυσης", ["Ελληνικά", "Αγγλικά"], key="language")
+    personal = {"Όνομα": chart.name if chart else ""}
+    prompt = ""
     if chart:
-        prompt=build_master_prompt(chart,personal,language,instructions_text,style_text,instructions_name,style_name)
+        prompt = build_master_prompt(
+            chart, personal, language, instructions_text, style_text, instructions_name, style_name
+        )
 
-
-    if not chart: st.warning("Δεν υπάρχει ελεγμένος χάρτης. Ξεκίνα από την καρτέλα «1 · Αρχεία».")
+    if not chart:
+        st.warning("Δεν υπάρχει ελεγμένος χάρτης. Ξεκίνα από την καρτέλα «1 · Αρχεία».")
     else:
-        checklist={"12 ακμές":len(chart.cusps)==12,"Βόρειος Δεσμός":any(p.name=='Βόρειος Δεσμός' for p in chart.points),"Νότιος Δεσμός":any(p.name=='Νότιος Δεσμός' for p in chart.points),"Πίνακας όψεων":bool(chart.aspects),"Οδηγίες v5.3 μόνιμα ενσωματωμένες":bool(instructions_text),"Καθαρός οδηγός ύφους ενσωματωμένος":bool(style_text)}
-        ready=all(checklist.values())
+        checklist = {
+            "12 ακμές": len(chart.cusps) == 12,
+            "Βόρειος Δεσμός": any(p.name == "Βόρειος Δεσμός" for p in chart.points),
+            "Νότιος Δεσμός": any(p.name == "Νότιος Δεσμός" for p in chart.points),
+            "Πίνακας όψεων": bool(chart.aspects),
+            "Οδηγίες v5.3 μόνιμα ενσωματωμένες": bool(instructions_text),
+            "Καθαρός οδηγός ύφους ενσωματωμένος": bool(style_text),
+        }
+        ready = all(checklist.values())
         with st.expander("Λίστα ελέγχου πριν τη δημιουργία", expanded=not ready):
-            st.dataframe(pd.DataFrame([{"Έλεγχος":k,"Κατάσταση":"✓" if v else "Λείπει"} for k,v in checklist.items()]),width="stretch",hide_index=True)
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {"Έλεγχος": k, "Κατάσταση": "✓" if v else "Λείπει"}
+                        for k, v in checklist.items()
+                    ]
+                ),
+                width="stretch",
+                hide_index=True,
+            )
         if not ready:
-            st.markdown('<div class="warn">⚠ Η αυτόματη δημιουργία παραμένει κλειδωμένη μέχρι να ολοκληρωθούν όλοι οι έλεγχοι παραπάνω.</div>',unsafe_allow_html=True)
+            st.markdown(
+                '<div class="warn">⚠ Η αυτόματη δημιουργία παραμένει κλειδωμένη μέχρι να ολοκληρωθούν όλοι οι έλεγχοι παραπάνω.</div>',
+                unsafe_allow_html=True,
+            )
 
         st.divider()
         col_auto, col_manual = st.columns(2)
@@ -213,20 +386,84 @@ with tab4:
         with col_auto:
             with st.container(border=True):
                 st.markdown("#### 🤖 Αυτόματη δημιουργία")
-                st.caption("Χρειάζεται δικό σου OpenAI API key. Δεν αποθηκεύεται πουθενά.")
-                api=st.text_input("OpenAI API key",type="password",label_visibility='collapsed',placeholder="sk-...")
-                if st.button("Δημιουργία πλήρους ανάλυσης",type="primary",disabled=not ready or not api,width="stretch"):
-                    with st.spinner("Δημιουργείται η ανάλυση των 12 Οίκων…"):
+                saved_key = _secret("OPENAI_API_KEY")
+                model = _secret("OPENAI_MODEL") or DEFAULT_MODEL
+                if saved_key:
+                    st.caption(
+                        "🔑 Χρησιμοποιείται το κλειδί OpenAI από τις ρυθμίσεις της εφαρμογής."
+                    )
+                    api = saved_key
+                else:
+                    st.caption(
+                        "Χρειάζεται δικό σου OpenAI API key. Δεν αποθηκεύεται πουθενά. "
+                        "(Μπορείς να το ορίσεις μόνιμα στα Secrets της εφαρμογής ως OPENAI_API_KEY.)"
+                    )
+                    api = st.text_input(
+                        "OpenAI API key",
+                        type="password",
+                        label_visibility="collapsed",
+                        placeholder="sk-...",
+                    )
+                st.caption(
+                    f"Η ανάλυση ελέγχεται αυτόματα και, αν χρειαστεί, διορθώνεται αυτόματα "
+                    f"(έως {DEFAULT_MAX_ROUNDS} γύροι συνολικά)."
+                )
+                if st.button(
+                    "Δημιουργία πλήρους ανάλυσης",
+                    type="primary",
+                    disabled=not ready or not api,
+                    width="stretch",
+                ):
+                    with st.status(
+                        "Δημιουργείται η ανάλυση των 12 Οίκων…", expanded=True
+                    ) as status:
+
+                        def _on_round(r):
+                            icon = "✓" if r.ok else "✗"
+                            status.write(
+                                f"{icon} Γύρος {r.number} ({r.kind}): "
+                                + (
+                                    "πέρασε τον έλεγχο."
+                                    if r.ok
+                                    else f"{r.error_count} σφάλματα — "
+                                    + (
+                                        "στέλνονται για διόρθωση…"
+                                        if r.number < DEFAULT_MAX_ROUNDS
+                                        else "τέλος γύρων."
+                                    )
+                                )
+                            )
+
                         try:
-                            text=generate_analysis(api,prompt)
-                            st.session_state.analysis=text
-                            st.session_state.analysis_docx_bytes=None
-                            st.session_state.analysis_docx_name=''
-                            st.session_state.validation=validate_analysis(chart,text,personal)
-                            st.session_state.analysis_source='api'
+                            outcome = generate_validated(
+                                api,
+                                prompt,
+                                validate=lambda t: validate_analysis(chart, t, personal),
+                                model=model,
+                                max_rounds=DEFAULT_MAX_ROUNDS,
+                                on_round=_on_round,
+                            )
+                            st.session_state.analysis = outcome.text
+                            st.session_state.analysis_docx_bytes = None
+                            st.session_state.analysis_docx_name = ""
+                            st.session_state.validation = outcome.validation
+                            st.session_state.analysis_source = "api"
+                            status.update(
+                                label=(
+                                    "✓ Η ανάλυση πέρασε τον έλεγχο."
+                                    if outcome.ok
+                                    else "Η ανάλυση δεν πέρασε μετά από όλους τους γύρους — δες τα σφάλματα παρακάτω."
+                                ),
+                                state="complete" if outcome.ok else "error",
+                                expanded=not outcome.ok,
+                            )
                         except Exception as e:
-                            st.error("Η δημιουργία απέτυχε.")
-                            with st.expander("Τεχνική λεπτομέρεια"): st.code(str(e))
+                            status.update(label="Η δημιουργία απέτυχε.", state="error")
+                            st.error(
+                                "Η δημιουργία απέτυχε. Έλεγξε το κλειδί OpenAI και δοκίμασε ξανά."
+                            )
+                            with st.expander("Τεχνική λεπτομέρεια"):
+                                st.code(str(e))
                 _analysis_result_panel("api", chart.name)
                 if not ready:
                     st.caption("Κλειδωμένο μέχρι να ολοκληρωθεί η λίστα ελέγχου παραπάνω.")
@@ -235,44 +472,67 @@ with tab4:
             with st.container(border=True):
                 st.markdown("#### 📋 Χειροκίνητη διαδρομή")
                 st.markdown("**1. Κατέβασε το δελτίο και στείλε το στο ChatGPT/Claude**")
-                audit=build_audit_docx(chart,personal,prompt)
-                st.download_button("⬇️ Λήψη δελτίου ελέγχου και πλήρους εντολής (Word)",audit,file_name="AstroCheck_Elegxos_kai_Odigies.docx",width="stretch")
+                audit = build_audit_docx(chart, personal, prompt)
+                st.download_button(
+                    "⬇️ Λήψη δελτίου ελέγχου και πλήρους εντολής (Word)",
+                    audit,
+                    file_name="AstroCheck_Elegxos_kai_Odigies.docx",
+                    width="stretch",
+                )
                 with st.expander("Έτοιμο μήνυμα για επικόλληση στο ChatGPT/Claude"):
                     st.code(FULL_ANALYSIS_PASTE_MESSAGE, language=None)
                 st.markdown("**2. Ανέβασε την ανάλυση σε Word και έλεγξέ την**")
-                uploaded_analysis=st.file_uploader(
+                uploaded_analysis = st.file_uploader(
                     "Τελική ανάλυση από ChatGPT/Claude (.docx)",
-                    type=['docx'],
+                    type=["docx"],
                     key=f"analysis_docx_{st.session_state.uploader_gen}",
                 )
-                if st.button("Έλεγχος ανάλυσης",width="stretch",disabled=not uploaded_analysis):
+                if st.button("Έλεγχος ανάλυσης", width="stretch", disabled=not uploaded_analysis):
                     try:
-                        uploaded_bytes=uploaded_analysis.getvalue()
-                        extracted=docx_text(uploaded_bytes)
-                        st.session_state.analysis=extracted
-                        st.session_state.analysis_docx_bytes=uploaded_bytes
-                        st.session_state.analysis_docx_name=uploaded_analysis.name
-                        st.session_state.validation=validate_analysis(chart,extracted,personal)
-                        st.session_state.analysis_source='docx'
+                        uploaded_bytes = uploaded_analysis.getvalue()
+                        extracted = docx_text(uploaded_bytes)
+                        st.session_state.analysis = extracted
+                        st.session_state.analysis_docx_bytes = uploaded_bytes
+                        st.session_state.analysis_docx_name = uploaded_analysis.name
+                        st.session_state.analysis_docx_hash = fingerprint(uploaded_bytes)
+                        st.session_state.validation = validate_analysis(chart, extracted, personal)
+                        st.session_state.analysis_source = "docx"
                     except Exception as e:
                         st.error("Δεν ήταν δυνατή η ανάγνωση του Word.")
-                        with st.expander("Τεχνική λεπτομέρεια"): st.code(str(e))
+                        with st.expander("Τεχνική λεπτομέρεια"):
+                            st.code(str(e))
+                if "analysis" in _stale and uploaded_analysis is not None:
+                    st.info("Ανέβηκε νέο Word. Πάτα «Έλεγχος ανάλυσης» για να ελεγχθεί.")
                 _analysis_result_panel("docx", chart.name)
                 st.divider()
                 st.caption("Εναλλακτικά, μπορείς να επικολλήσεις το πλήρες κείμενο.")
-                pasted=st.text_area("Επικολλημένη ανάλυση",height=150,key='pasted_analysis',label_visibility='collapsed',placeholder="Επικόλλησε εδώ το πλήρες κείμενο της ανάλυσης…")
-                if st.button("Έλεγχος πληρότητας επικολλημένου κειμένου",width="stretch",disabled=not pasted):
-                    st.session_state.analysis=pasted
-                    st.session_state.analysis_docx_bytes=None
-                    st.session_state.analysis_docx_name=''
-                    st.session_state.validation=validate_analysis(chart,pasted,personal)
-                    st.session_state.analysis_source='paste'
+                pasted = st.text_area(
+                    "Επικολλημένη ανάλυση",
+                    height=150,
+                    key="pasted_analysis",
+                    label_visibility="collapsed",
+                    placeholder="Επικόλλησε εδώ το πλήρες κείμενο της ανάλυσης…",
+                )
+                if st.button(
+                    "Έλεγχος πληρότητας επικολλημένου κειμένου",
+                    width="stretch",
+                    disabled=not pasted,
+                ):
+                    st.session_state.analysis = pasted
+                    st.session_state.analysis_docx_bytes = None
+                    st.session_state.analysis_docx_name = ""
+                    st.session_state.validation = validate_analysis(chart, pasted, personal)
+                    st.session_state.analysis_source = "paste"
                 _analysis_result_panel("paste", chart.name)
 
 with tab6:
     st.subheader("Τελική αναδιατύπωση")
-    st.caption("Η αναδιατύπωση αλλάζει μόνο το ύφος. Οι Οίκοι, τα δεδομένα και οι ενότητες μένουν ίδια.")
-    rewrite_command_path = Path(__file__).resolve().parent / "Desmeftiki_Entoli_Telikis_Anadiatyposis_v8.docx"
+    st.caption(
+        "Η αναδιατύπωση αλλάζει μόνο το ύφος. Οι Οίκοι, τα δεδομένα και οι ενότητες μένουν ίδια."
+    )
+    rewrite_command_path = (
+        Path(__file__).resolve().parent / "Desmeftiki_Entoli_Telikis_Anadiatyposis_v8.docx"
+    )
     if rewrite_command_path.exists():
         st.download_button(
             "⬇️ Λήψη Δεσμευτικής Εντολής Τελικής Αναδιατύπωσης",
@@ -283,27 +543,55 @@ with tab6:
     else:
         st.warning("Λείπει η ενσωματωμένη Δεσμευτική Εντολή Τελικής Αναδιατύπωσης.")
     with st.expander("Έτοιμο μήνυμα για επικόλληση στο ChatGPT/Claude", expanded=True):
-        _client_name = (st.session_state.chart.name if st.session_state.chart and st.session_state.chart.name else "[ΟΝΟΜΑ]")
-        st.code(REWRITE_PASTE_MESSAGE.format(name=_client_name), language=None)
-    if not (chart and st.session_state.analysis and st.session_state.validation and st.session_state.validation.ok):
-        st.warning("Πρώτα χρειάζεται ελεγμένη τεχνική ανάλυση από την καρτέλα «2 · Ανάλυση & έλεγχος».")
+        _client_name = chart.name if chart and chart.name else "[ΟΝΟΜΑ]"
+        _rewrite_message = REWRITE_PASTE_MESSAGE.format(name=_client_name)
+        if st.session_state.get("language") == "Αγγλικά":
+            _rewrite_message += REWRITE_ENGLISH_ADDENDUM
+        st.code(_rewrite_message, language=None)
+    if not (
+        chart
+        and st.session_state.analysis
+        and st.session_state.validation
+        and st.session_state.validation.ok
+    ):
+        st.warning(
+            "Πρώτα χρειάζεται ελεγμένη τεχνική ανάλυση από την καρτέλα «2 · Ανάλυση & έλεγχος»."
+        )
     else:
-        rewritten=st.file_uploader("Τελική αναδιατύπωση (.docx)",type=['docx'],key=f"rewrite_docx_{st.session_state.uploader_gen}")
-        if st.button("Έλεγχος τελικού εντύπου",disabled=not rewritten,width="stretch"):
-            rewritten_bytes=rewritten.getvalue()
-            rewritten_text=docx_text(rewritten_bytes)
-            result=validate_rewrite(chart,st.session_state.analysis,rewritten_text,personal)
-            st.session_state.rewrite_validation=result
-            st.session_state.rewrite_docx_bytes=rewritten_bytes
-            st.session_state.rewrite_docx_name=rewritten.name
-        result=st.session_state.get('rewrite_validation')
+        rewritten = st.file_uploader(
+            "Τελική αναδιατύπωση (.docx)",
+            type=["docx"],
+            key=f"rewrite_docx_{st.session_state.uploader_gen}",
+        )
+        if st.button("Έλεγχος τελικού εντύπου", disabled=not rewritten, width="stretch"):
+            rewritten_bytes = rewritten.getvalue()
+            rewritten_text = docx_text(rewritten_bytes)
+            result = validate_rewrite(chart, st.session_state.analysis, rewritten_text, personal)
+            st.session_state.rewrite_validation = result
+            st.session_state.rewrite_docx_bytes = rewritten_bytes
+            st.session_state.rewrite_docx_name = rewritten.name
+            st.session_state.rewrite_docx_hash = fingerprint(rewritten_bytes)
+            st.session_state.rewrite_analysis_hash = fingerprint(st.session_state.analysis)
+        if "rewrite" in _stale and rewritten is not None:
+            st.info("Ανέβηκε νέο Word ή άλλαξε η ανάλυση. Πάτα «Έλεγχος τελικού εντύπου» για νέο έλεγχο.")
+        result = st.session_state.get("rewrite_validation")
         if result:
             if result.ok:
-                st.markdown(f'<div class="ok">{result.summary()}</div>',unsafe_allow_html=True)
-                st.download_button("⬇️ Λήψη τελικού εντύπου",st.session_state.rewrite_docx_bytes,file_name=st.session_state.rewrite_docx_name,type="primary",width="stretch")
+                st.markdown(f'<div class="ok">{result.summary()}</div>', unsafe_allow_html=True)
+                for note in getattr(result, "warnings", []):
+                    st.warning(note)
+                st.download_button(
+                    "⬇️ Λήψη τελικού εντύπου",
+                    st.session_state.rewrite_docx_bytes,
+                    file_name=st.session_state.rewrite_docx_name,
+                    type="primary",
+                    width="stretch",
+                )
             else:
-                st.markdown(f'<div class="warn">⚠ {result.summary()}</div>',unsafe_allow_html=True)
-                with st.expander("Λεπτομέρειες",expanded=True):
-                    for line in result.details_lines(): st.write("•",line)
-                st.button("Λήψη τελικής αναδιατύπωσης — κλειδωμένη",disabled=True,width="stretch")
-
+                st.markdown(f'<div class="warn">⚠ {result.summary()}</div>', unsafe_allow_html=True)
+                with st.expander("Λεπτομέρειες", expanded=True):
+                    for line in result.details_lines():
+                        st.write("•", line)
+                    for note in getattr(result, "warnings", []):
+                        st.write("• (προς ανάγνωση, δεν κλειδώνει)", note)
+                st.button("Λήψη τελικής αναδιατύπωσης — κλειδωμένη", disabled=True, width="stretch")
