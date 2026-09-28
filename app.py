@@ -278,7 +278,18 @@ MAIN_TABS = ["1 · Αρχεία", TAB_ANALYSIS, "3 · Τελική αναδια�
 # που καταργήθηκε) επιστρέφει με ασφάλεια στην πρώτη καρτέλα.
 if st.session_state.get("main_tab") not in (None, *MAIN_TABS):
     st.session_state.main_tab = "1 · Αρχεία"
-tab1, tab4, tab6 = st.tabs(MAIN_TABS, key="main_tab", default="1 · Αρχεία")
+# on_change="rerun": απαραίτητο ώστε η ενεργή καρτέλα να παρακολουθείται στο
+# st.session_state.main_tab. Με την προεπιλογή ("ignore") η καρτέλα ΔΕΝ
+# παρακολουθείται, οπότε τα κουμπιά «Συνέχεια στην …» άλλαζαν την τιμή χωρίς
+# κανένα αποτέλεσμα. Όλες οι καρτέλες εξακολουθούν να εκτελούνται σε κάθε rerun.
+# Η προεπιλογή δίνεται μόνο στην πρώτη εμφάνιση, για να μη συγκρούεται με την
+# τιμή που ορίζουν τα κουμπιά μέσω session_state.
+tab1, tab4, tab6 = st.tabs(
+    MAIN_TABS,
+    key="main_tab",
+    on_change="rerun",
+    default=None if st.session_state.get("main_tab") else "1 · Αρχεία",
+)
 
 with tab1:
     st.subheader("Ανέβασε μόνο το νέο PDF")
