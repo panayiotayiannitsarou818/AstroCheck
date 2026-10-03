@@ -4,6 +4,7 @@ from models import Aspect, Chart, Point
 from astrology import (
     SIGN_CODES,
     absolute,
+    angle_conjunctions_from_positions,
     angular_distance,
     house_of,
     opposite_node,
@@ -133,6 +134,21 @@ def _parse_positions(page):
     return points, cusps
 
 
+def grid_glyph_count(page) -> int:
+    """Πόσα σύμβολα όψεων τυπώνει ο πίνακας Aspects (ανεξάρτητα από το αν
+    αντιστοιχίστηκαν σε κελί). Χρησιμοποιείται για έλεγχο ΠΛΗΡΟΤΗΤΑΣ: κάθε
+    σύμβολο πρέπει να έχει γίνει ακριβώς μία όψη."""
+    words = page.extract_words(x_tolerance=1, y_tolerance=2, keep_blank_chars=False)
+    aspect_word = next((w for w in words if w["text"] == "Aspects"), None)
+    if not aspect_word:
+        return 0
+    return sum(
+        1
+        for w in words
+        if w["top"] > aspect_word["top"] + 12 and w["text"] in ASPECT_GLYPHS and w["x0"] > 45
+    )
+
+
 def _parse_aspect_grid(page, points_by_code):
     words = page.extract_words(x_tolerance=1, y_tolerance=2, keep_blank_chars=False)
     aspect_word = next((w for w in words if w["text"] == "Aspects"), None)
@@ -225,10 +241,24 @@ ORB_TOLERANCE = 3 / 60  # 3′ -- περιθώριο στρογγυλοποίη�
 MIN_ASPECTS = 10
 
 
-def integrity_problems(points, cusps, aspects, printed_houses) -> list[str]:
+def integrity_problems(
+    points, cusps, aspects, printed_houses, grid_glyphs: int | None = None
+) -> list[str]:
     """Διασταύρωση όλων των αναγνωσμένων δεδομένων. Επιστρέφει λίστα
-    προβλημάτων (κενή = όλα συνεπή)."""
+    προβλημάτων (κενή = όλα συνεπή).
+
+    grid_glyphs: πόσα σύμβολα όψεων τυπώνει ο πίνακας του PDF. Όταν δίνεται,
+    ελέγχεται ΠΛΗΡΟΤΗΤΑ: ο αριθμός όψεων που διαβάστηκαν από τον πίνακα
+    πρέπει να είναι ακριβώς ίσος (ο parser αλλιώς παραλείπει σιωπηλά σύμβολο
+    που δεν μπορεί να αντιστοιχίσει σε κελί ή orb)."""
     problems = []
+    if grid_glyphs is not None:
+        read = sum(1 for a in aspects if a.source == "Πίνακας Astrodienst")
+        if read != grid_glyphs:
+            problems.append(
+                f"Ο πίνακας όψεων του PDF έχει {grid_glyphs} σύμβολα, αλλά διαβάστηκαν "
+                f"{read} όψεις -- ο πίνακας δεν διαβάστηκε πλήρως."
+            )
     names = {p.name for p in points}
     missing = [n for n in EXPECTED_POINTS if n not in names]
     if missing:
@@ -271,6 +301,19 @@ def integrity_problems(points, cusps, aspects, printed_houses) -> list[str]:
             problems.append(
                 f"Όψη {a.first}–{a.second} ({a.aspect}): ο πίνακας δίνει orb {a.orb_text}, "
                 f"οι θέσεις δίνουν {int(real_orb)}°{round((real_orb % 1) * 60):02d}′."
+            )
+    # v8: κάθε κελί του πίνακα το πολύ μία όψη. Μαζί με την καταμέτρηση
+    # συμβόλων και τη μαθηματική επιβεβαίωση κάθε όψης, αποκλείει και την
+    # περίπτωση δύο συμβόλων στο ίδιο κελί (που θα άφηνε άλλο κελί κενό).
+    pair_counts = {}
+    for a in table_aspects:
+        key = frozenset((a.first, a.second))
+        pair_counts[key] = pair_counts.get(key, 0) + 1
+    for key, count in pair_counts.items():
+        if count > 1:
+            problems.append(
+                f"Το ζεύγος {'–'.join(sorted(key))} διαβάστηκε {count} φορές από τον πίνακα "
+                f"-- πιθανή λάθος αντιστοίχιση κελιού."
             )
     if len(table_aspects) < MIN_ASPECTS:
         problems.append(f"Αναγνωρίστηκαν μόνο {len(table_aspects)} όψεις από τον πίνακα.")
@@ -322,7 +365,10 @@ def parse_astrodienst_pdf(data: bytes, filename: str) -> Chart:
         aspects = _parse_aspect_grid(page, by_code)
         if node:
             aspects.extend(south_node_aspects(aspects))
-        problems = integrity_problems(points, cusps, aspects, printed_houses)
+        aspects.extend(angle_conjunctions_from_positions(points, aspects))
+        problems = integrity_problems(
+            points, cusps, aspects, printed_houses, grid_glyphs=grid_glyph_count(page)
+        )
         if problems:
             raise ValueError(
                 "Ο έλεγχος ακεραιότητας του PDF απέτυχε — πιθανή αλλαγή στη μορφή του "

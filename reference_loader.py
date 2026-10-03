@@ -5,9 +5,9 @@ import streamlit as st
 from docx import Document
 
 REFERENCE_DIR = Path(__file__).resolve().parent / "references"
-DEFAULT_INSTRUCTIONS = REFERENCE_DIR / "Odigies_v5.docx"
+DEFAULT_INSTRUCTIONS = REFERENCE_DIR / "Odigies_v6.docx"
 DEFAULT_STYLE = REFERENCE_DIR / "Elena_style_guide_v2.docx"
-ROOT_INSTRUCTIONS = Path(__file__).resolve().parent / "Odigies_v5.docx"
+ROOT_INSTRUCTIONS = Path(__file__).resolve().parent / "Odigies_v6.docx"
 ROOT_STYLE = Path(__file__).resolve().parent / "Elena_style_guide_v2.docx"
 
 
@@ -169,8 +169,6 @@ def load_default_references() -> tuple[str, str]:
     instructions = DEFAULT_INSTRUCTIONS if DEFAULT_INSTRUCTIONS.exists() else ROOT_INSTRUCTIONS
     style = DEFAULT_STYLE if DEFAULT_STYLE.exists() else ROOT_STYLE
     if not instructions.exists() or not style.exists():
-        # Πριν έγραφε "...v4...", ενώ το πραγματικό αρχείο είναι Odigies_v5.docx
-        # (και το app.py το παρουσιάζει ως "Ενσωματωμένες οδηγίες v5.3") --
-        # ένα μήνυμα σφάλματος έπρεπε τουλάχιστον να συμφωνεί με το filename.
-        raise FileNotFoundError("Λείπουν οι ενσωματωμένες οδηγίες v5 ή το πρότυπο ύφους.")
+        # Το μήνυμα σφάλματος πρέπει να συμφωνεί με το πραγματικό filename.
+        raise FileNotFoundError("Λείπουν οι ενσωματωμένες οδηγίες v6 (Odigies_v6.docx) ή το πρότυπο ύφους.")
     return docx_text(instructions), docx_text(style)

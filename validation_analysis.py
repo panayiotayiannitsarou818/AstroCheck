@@ -23,12 +23,16 @@ from validation_aspects import (
     _dedupe_aspects,
     _mandatory_aspects,
     _strict_occurrence_errors,
+    _aspect_claim_problems,
+    _stray_technical_values,
+    _malformed_aspect_rows,
 )
 from validation_structure import (
     _box_ruler_text,
     _house_segments,
     _involved_points,
     _location_claim_errors,
+    _ruler_errors,
     _ruler_names_in_body,
     _sign_claim_errors,
     _unauthorized_personal_claims,
@@ -52,6 +56,16 @@ class ValidationResult:
     wrong_house_claims: list = field(default_factory=list)
     unauthorized_personal_claims: list = field(default_factory=list)
     wrong_sign_claims: list = field(default_factory=list)  # (σημείο, δηλωμένο, σωστό, πλαίσιο)
+    # v4
+    wrong_ruler_claims: list = field(default_factory=list)  # (Οίκος, δηλωμένος, αναμενόμενος, πού)
+    missing_ruler_box: list = field(default_factory=list)  # Οίκοι χωρίς «Κυβερνήτης:»
+    undeclared_aspects: list = field(default_factory=list)  # (Α, Β, τύπος, απόσπασμα)
+    # v7: γνωστό ζεύγος, αλλά η ΣΥΓΚΕΚΡΙΜΕΝΗ δήλωση έχει λάθος τύπο/orb/βαρύτητα
+    aspect_claim_mismatches: list = field(default_factory=list)  # (όψη, διαφορά, απόσπασμα)
+    # v9: αριθμός orb εκτός δομημένης γραμμής (Odigies v6, κανόνας 5)
+    stray_technical_values: list = field(default_factory=list)  # (τιμή, απόσπασμα)
+    # v10: γραμμή πίνακα που μοιάζει με γραμμή όψης αλλά δεν διαβάζεται πλήρως
+    malformed_aspect_rows: list = field(default_factory=list)  # (λόγος, γραμμή)
 
     def summary(self) -> str:
         if self.ok:
@@ -99,6 +113,28 @@ class ValidationResult:
             )
         if self.wrong_sign_claims:
             parts.append(f"{len(self.wrong_sign_claims)} λανθασμένες δηλώσεις ζωδίου")
+        if self.wrong_ruler_claims:
+            parts.append(
+                f"{len(self.wrong_ruler_claims)} δηλώσεις κυβερνήτη δεν αντιστοιχούν στο ζώδιο της ακμής"
+            )
+        if self.missing_ruler_box:
+            parts.append(
+                f"{len(self.missing_ruler_box)} Οίκοι χωρίς γραμμή «Κυβερνήτης:» στο πλαίσιο σύνοψης"
+            )
+        if self.malformed_aspect_rows:
+            parts.append(f"{len(self.malformed_aspect_rows)} γραμμές όψεων δεν διαβάζονται πλήρως")
+        if self.stray_technical_values:
+            parts.append(
+                f"{len(self.stray_technical_values)} αριθμοί orb εκτός δομημένης γραμμής όψης"
+            )
+        if self.aspect_claim_mismatches:
+            parts.append(
+                f"{len(self.aspect_claim_mismatches)} δηλώσεις όψης διαφέρουν από τον χάρτη σε τύπο, orb ή βαρύτητα"
+            )
+        if self.undeclared_aspects:
+            parts.append(
+                f"{len(self.undeclared_aspects)} όψεις δηλώνονται στο κείμενο αλλά δεν υπάρχουν στον ελεγμένο χάρτη"
+            )
         return "Η ανάλυση δεν ολοκληρώθηκε: " + "· ".join(parts) + "."
 
     def details_lines(self) -> list[str]:
@@ -144,6 +180,30 @@ class ValidationResult:
         for point_name, claimed, expected, snippet in self.wrong_sign_claims:
             lines.append(
                 f"Λανθασμένο ζώδιο — {point_name}: το κείμενο γράφει {claimed}, ενώ τα ελεγμένα δεδομένα δίνουν {expected}. Σημείο: {snippet}"
+            )
+        for house_n, claimed, expected, where in self.wrong_ruler_claims:
+            lines.append(
+                f"Οίκος {house_n}: το {where} δηλώνει κυβερνήτη {claimed}, ενώ από το ζώδιο της ακμής είναι {expected}."
+            )
+        for house_n in self.missing_ruler_box:
+            lines.append(
+                f"Οίκος {house_n}: λείπει (ή δεν ονομάζει πλανήτη) η γραμμή «Κυβερνήτης:» του πλαισίου σύνοψης."
+            )
+        for reason, row in self.malformed_aspect_rows:
+            lines.append(
+                f"Μη αναγνώσιμη γραμμή όψης — {reason}. Κάθε γραμμή όψης: «Α–Β | Τύπος | orb X°YY′ | Κατηγορία». Γραμμή: «{row}»"
+            )
+        for value, snip in self.stray_technical_values:
+            lines.append(
+                f"Τεχνικό στοιχείο εκτός δομημένης γραμμής — {value}: οι αριθμοί orb γράφονται μόνο στη μορφή «Α–Β Τύπος (orb X°YY′, Κατηγορία)», σε δική τους γραμμή. Σημείο: «{snip}»"
+            )
+        for a, diff, snip in self.aspect_claim_mismatches:
+            lines.append(
+                f"Λάθος δήλωση όψης — {a.first}–{a.second}: {diff} (ελεγμένα: {a.aspect}, orb {a.orb_text}, {a.weight}). Σημείο: «{snip}»"
+            )
+        for a, b, t, snip in self.undeclared_aspects:
+            lines.append(
+                f"Αναφορά σε όψη που δεν υπάρχει στον χάρτη — {a}–{b} ({t}). Σημείο: «{snip}»"
             )
         return lines
 
@@ -218,6 +278,10 @@ def validate_analysis(chart, analysis_text: str, personal: dict | None = None) -
 
     wrong_house_claims = _location_claim_errors(chart, text)
     wrong_sign_claims = _sign_claim_errors(chart, text)
+    wrong_ruler_claims, missing_ruler_box = _ruler_errors(chart, segments)
+    undeclared_aspects, aspect_claim_mismatches = _aspect_claim_problems(chart, text)
+    stray_technical_values = _stray_technical_values(text)
+    malformed_aspect_rows = _malformed_aspect_rows(text)
     unauthorized_personal_claims = _unauthorized_personal_claims(personal, text)
 
     # Έλεγχος συνέπειας ΟΛΩΝ των αναφερόμενων όψεων, όχι μόνο των
@@ -246,6 +310,12 @@ def validate_analysis(chart, analysis_text: str, personal: dict | None = None) -
         or wrong_house_claims
         or unauthorized_personal_claims
         or wrong_sign_claims
+        or wrong_ruler_claims
+        or missing_ruler_box
+        or undeclared_aspects
+        or aspect_claim_mismatches
+        or stray_technical_values
+        or malformed_aspect_rows
     )
     return ValidationResult(
         ok,
@@ -261,4 +331,10 @@ def validate_analysis(chart, analysis_text: str, personal: dict | None = None) -
         wrong_house_claims,
         unauthorized_personal_claims,
         wrong_sign_claims=wrong_sign_claims,
+        wrong_ruler_claims=wrong_ruler_claims,
+        missing_ruler_box=missing_ruler_box,
+        undeclared_aspects=undeclared_aspects,
+        aspect_claim_mismatches=aspect_claim_mismatches,
+        stray_technical_values=stray_technical_values,
+        malformed_aspect_rows=malformed_aspect_rows,
     )

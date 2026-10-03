@@ -7,6 +7,7 @@ import re
 
 from validation_patterns import (
     ANGLE_NAMES,
+    _normalize_prime_marks,
     _ASPECT_FORMS,
     _NAME_FORMS,
     _WEIGHT_FORMS,
@@ -325,7 +326,10 @@ def _mandatory_aspects(chart):
     angle_conjunctions = [
         a
         for a in chart.aspects
-        if a.aspect == "Σύνοδος" and (a.first in ANGLE_NAMES or a.second in ANGLE_NAMES)
+        if a.aspect == "Σύνοδος"
+        and (a.first in ANGLE_NAMES or a.second in ANGLE_NAMES)
+        # Ανεξαρτήτως πηγής (πίνακας Astrodienst ή υπολογισμός από τις θέσεις):
+        # η προέλευση μιας συνόδου με γωνία δεν αλλάζει την υποχρέωση (κανόνας 6Β).
     ]
     return hard + angle_conjunctions
 
@@ -370,3 +374,522 @@ def _dedupe_aspects(*lists) -> list:
             if item not in result:
                 result.append(item)
     return result
+
+
+# ---------------------------------------------------------------------------
+# v4/v5: όψεις που το κείμενο ΔΗΛΩΝΕΙ αλλά δεν υπάρχουν στον ελεγμένο χάρτη.
+# Όλοι οι παραπάνω έλεγχοι ξεκινούν από το chart.aspects, άρα ένα επινοημένο
+# ζεύγος δεν ελεγχόταν ποτέ. Εξετάζονται διαδοχικά ονόματα στην ίδια πρόταση
+# και αναγνωρίζονται ΜΟΝΟ γραμματικά ρητές δηλώσεις όψης:
+#   Α. «Ήλιος–Σελήνη τετράγωνο …»                    (ζεύγος με παύλα, τύπος μετά)
+#   Β. «τετράγωνο Ήλιου–Σελήνης», «το τετράγωνο του Ήλιου με τη Σελήνη»,
+#      «square between the Sun and the Moon»           (τύπος πριν από το ζεύγος)
+#   Γ. «Ο Ήλιος (σχηματίζει) τετράγωνο με τη Σελήνη», «Ήλιος τετράγωνο Σελήνη»,
+#      «The Sun forms a square with the Moon», «Sun square Moon»
+# Κάθε τέτοια δήλωση είναι σφάλμα, με ή χωρίς orb. Αρνήσεις («δεν σχηματίζει»)
+# και προτάσεις όπου το υποκείμενο είναι αμφίσημο («… και τρίγωνο με τη Χ»)
+# αγνοούνται σκόπιμα -- προτιμάται να χαθεί μια αμφίσημη περίπτωση παρά να
+# μπλοκαριστεί σωστή ανάλυση.
+# ---------------------------------------------------------------------------
+_ANY_ASPECT = "(?:" + "|".join(_ASPECT_FORMS.values()) + ")"
+_ART = r"(?:(?:ο|η|τον|την|τη|το|του|της|the)\s+)?"
+_DASH = r"\s*[–—-]\s*"
+_LINK = rf"(?:{_DASH}|\s+(?:με|και|and|with|to|προς)\s+{_ART})"
+# Γ: ό,τι μπαίνει ανάμεσα στο υποκείμενο και τον τύπο (μόνο ρήμα/άρθρο).
+_VERB = (
+    r"(?:(?:σχηματίζ\w*|κάνει|κάνουν|δημιουργ\w*|έχει|έχουν|βρίσκ\w+|είναι|"
+    r"forms?|makes?|has|have|is|are)\s+)?"
+    r"(?:(?:ένα|ενός|μια|μία|σε|a|an|in)\s+){0,2}"
+    # v8: συνήθη επίθετα/επιρρήματα πριν από τον τύπο («ισχυρό τετράγωνο»,
+    # «a strong square», «ένα πολύ στενό τρίγωνο»)
+    r"(?:(?:πολύ|αρκετά|ιδιαίτερα|ισχυρ\w*|στεν\w*|πλατ\w*|χαλαρ\w*|έντον\w*|"
+    r"δυναμικ\w*|αρμονικ\w*|εύκολ\w*|δύσκολ\w*|κρίσιμ\w*|ακριβ\w*|σημαντικ\w*|"
+    r"καθοριστικ\w*|βασικ\w*|κεντρικ\w*|εντυπωσιακ\w*|very|quite|strong|tight|close|"
+    r"wide|loose|exact|harmonious|challenging|dynamic|tense|important|significant|"
+    r"powerful|key|major|notable|striking)\s+){0,3}"
+)
+_GAP_C = re.compile(rf"^\s+{_VERB}({_ANY_ASPECT})\s+(?:(?:με|with|to|προς)\s+)?{_ART}$", re.IGNORECASE)
+_PREFIX_B = re.compile(
+    rf"({_ANY_ASPECT})\s+(?:(?:μεταξύ|ανάμεσα\s+σ\w*|between|of)\s+)?{_ART}$", re.IGNORECASE
+)
+_GAP_AB = re.compile(rf"^{_LINK}$", re.IGNORECASE)
+_NEGATION = re.compile(
+    r"(?<!\w)(?:δεν|μην|όχι|ούτε|χωρίς|καμία|κανένα|not|no|never|neither|nor|without)(?!\w)",
+    re.IGNORECASE,
+)
+# v6: η άρνηση μετρά μόνο μέσα στην ΙΔΙΑ πρόταση-δήλωση (clause). Στο «Δεν
+# είναι εύκολο, επειδή ο Ήλιος σχηματίζει τετράγωνο με τη Σελήνη» το «δεν»
+# ανήκει στην κύρια πρόταση και ΔΕΝ αναιρεί την όψη.
+_CLAUSE_BOUNDARY = re.compile(
+    r"[,;:·\u0387(—–]|(?<!\w)(?:επειδή|γιατί|διότι|αλλά|ενώ|όμως|καθώς|ότι|πως|αφού|"
+    r"because|but|while|since|that|although|whereas)(?!\w)",
+    re.IGNORECASE,
+)
+_EXISTENCE_NEGATION = re.compile(
+    r"(?<!\w)(?:δεν|μην)\s+(?:\w+\s+)?(?:υπάρχ|σχηματίζ|εμφανίζ|προκύπτ|ισχύ|επιβεβαιών)\w*"
+    r"|(?<!\w)(?:does|do|did)\s+not\s+(?:exist|appear|occur|form|apply)"
+    r"|(?<!\w)(?:is|are)\s+(?:not\s+present|absent|not\s+in\s+the\s+chart)",
+    re.IGNORECASE,
+)
+_SENTENCE_END = re.compile(r"[\r\n]|[.;!?](?:\s|$)")
+_ORB_RE = re.compile(r"\d{1,2}\s*°\s*\d{1,2}\s*′")
+
+
+def _name_matches(text: str) -> list[tuple[int, int, str]]:
+    found = []
+    for canonical, form in _NAME_FORMS.items():
+        for m in re.finditer(rf"(?<!\w){form}(?!\w)", text, re.IGNORECASE):
+            found.append((m.start(), m.end(), canonical))
+    found.sort()
+    result = []  # κράτα τη μακρύτερη ταύτιση όπου επικαλύπτονται
+    for item in found:
+        if result and item[0] < result[-1][1]:
+            if item[1] - item[0] > result[-1][1] - result[-1][0]:
+                result[-1] = item
+            continue
+        result.append(item)
+    return result
+
+
+# v9: η σύνταξη Γ δεν βασίζεται πλέον σε λίστα επιτρεπτών ρημάτων/επιθέτων
+# («σχηματίζει», «ισχυρό» ...), που έπρεπε να επεκτείνεται σε κάθε γύρο.
+# Γενικός κανόνας: ανάμεσα σε δύο διαδοχικά σημεία της ίδιας φράσης (χωρίς
+# κόμμα, άνω τελεία, παρένθεση κ.λπ.) υπάρχει τύπος όψης, και μετά τον τύπο
+# έως τρεις λέξεις («με τη», «with the») πριν από το δεύτερο σημείο.
+_GAP_BREAK = re.compile(r"[,;:·\u0387()\[\]—–|]")
+_GAP_TAIL = re.compile(rf"({_ANY_ASPECT})(?:\s+[^\s]+){{0,3}}\s+$", re.IGNORECASE)
+
+
+_RELATIVE = re.compile(
+    r"^\s*,\s*(?:(?:που|ο\s+οποίος|η\s+οποία|το\s+οποίο|οι\s+οποίοι|which|that|who)\s)?",
+    re.IGNORECASE,
+)
+
+
+def _generic_gap_aspect(gap: str):
+    # «Ο Άρης, που σχηματίζει τετράγωνο με τον Κρόνο» -- αναφορική πρόταση
+    gap = _RELATIVE.sub(" ", gap, count=1)
+    if len(gap) > 90 or _GAP_BREAK.search(gap):
+        return None
+    m = _GAP_TAIL.search(gap)
+    return _aspect_type(m.group(1)) if m else None
+
+
+def _aspect_type(fragment: str):
+    return next(
+        (k for k, form in _ASPECT_FORMS.items() if re.search(form, fragment, re.IGNORECASE)),
+        None,
+    )
+
+
+def _sentence_bounds(text: str, start: int, end: int) -> tuple[int, int]:
+    left = max((m.end() for m in _SENTENCE_END.finditer(text, 0, start)), default=0)
+    m = _SENTENCE_END.search(text, end)
+    return left, (m.start() if m else len(text))
+
+
+# ---------------------------------------------------------------------------
+# v7: ΕΝΙΑΙΟΣ εξαγωγέας δηλώσεων όψης. Κάθε αναγνωρισμένη δήλωση -- σε πρόζα
+# ή πίνακα, για γνωστό ή άγνωστο ζεύγος -- συγκρίνεται με τον χάρτη ως
+#     ζεύγος -> τύπος -> δηλωμένο orb -> δηλωμένη βαρύτητα.
+# Πριν, τα γνωστά ζεύγη παρακάμπτονταν εδώ, και οι παλαιότεροι έλεγχοι
+# αναζητούσαν μόνο αν υπάρχει ΚΑΠΟΥ η σωστή αναφορά· μια πρόσθετη λανθασμένη
+# δήλωση για το ίδιο ζεύγος δεν ελεγχόταν.
+# Orb λαμβάνεται μόνο όταν δηλώνεται ρητά ως orb («orb 1°13′») ή ως πρώτο
+# στοιχείο παρένθεσης αμέσως μετά τη δήλωση· έτσι μια θέση («στις 12°30′
+# Λέοντα») δεν διαβάζεται ως orb. Βαρύτητα λαμβάνεται μόνο μέσα σε αυτή την
+# παρένθεση ή σε δικό της κελί πίνακα.
+# ---------------------------------------------------------------------------
+_DMS = r"(\d{1,2})\s*°\s*(\d{1,2})\s*′"
+_DEC = r"(\d{1,2}[.,]\d+)\s*°"  # v8: δεκαδικό orb («0.01°»)· απαιτεί δεκαδικό μέρος
+_ORB_KEYED = re.compile(rf"\borb\s*[:=]?\s*(?:{_DMS}|{_DEC})", re.IGNORECASE)
+_PAREN = re.compile(r"^\s*[,–—-]?\s*\(([^)]*)\)")
+_PAREN_ORB = re.compile(rf"^\s*(?:orb\s*[:=]?\s*)?(?:{_DMS}|{_DEC})\s*(?:,|$)", re.IGNORECASE)
+
+
+def _orb_value(m, offset=1) -> tuple[str, float, bool]:
+    """(κείμενο, λεπτά τόξου, ακριβής_μορφή) από ταίριασμα _DMS|_DEC."""
+    d, mi, dec = m.group(offset), m.group(offset + 1), m.group(offset + 2)
+    if d is not None:
+        return f"{int(d)}°{int(mi):02d}′", int(d) * 60 + int(mi), True
+    value = float(dec.replace(",", "."))
+    return f"{dec}°", value * 60, False
+
+
+def _orb_differs(declared, a) -> bool:
+    text, minutes, exact = declared
+    if exact:
+        return text != a.orb_text
+    return abs(minutes - a.orb * 60) > 1.0  # δεκαδικό: ανοχή στρογγυλοποίησης 1′
+
+
+def _weights_in(fragment: str) -> list[str]:
+    return [k for k, form in _WEIGHT_FORMS.items() if re.search(form, fragment, re.IGNORECASE)]
+
+
+def _claim_details(tail: str):
+    """(όλα τα δηλωμένα orb, όλες οι δηλωμένες βαρύτητες) αμέσως μετά τη
+    δήλωση. v8: επιστρέφονται ΟΛΕΣ οι τιμές -- δύο αντιφατικές τιμές δεν
+    «ακυρώνουν» η μία την άλλη, ελέγχεται η καθεμία."""
+    orbs, weights = [], []
+    paren = _PAREN.match(tail)
+    if paren:
+        inner = paren.group(1)
+        m = _PAREN_ORB.match(inner)
+        if m:
+            orbs.append(_orb_value(m))
+        weights = _weights_in(inner)
+    for m in _ORB_KEYED.finditer(tail):
+        value = _orb_value(m)
+        if value not in orbs:
+            orbs.append(value)
+    return orbs, weights
+
+
+# v11: ελλειπτικό υποκείμενο. Στο «Η Σελήνη σχηματίζει τρίγωνο με τον Ερμή
+# και τρίγωνο με την Αφροδίτη» το δεύτερο τρίγωνο ανήκει στη ΣΕΛΗΝΗ, όχι στον
+# Ερμή. Όταν το κενό ανάμεσα σε δύο σημεία αρχίζει με σύνδεσμο και περιέχει
+# τύπο όψης, η όψη αποδίδεται στο υποκείμενο της προηγούμενης δήλωσης της
+# ίδιας πρότασης· αν δεν υπάρχει τέτοιο, η πρόταση θεωρείται αμφίσημη και
+# ΔΕΝ παράγει δήλωση (αβεβαιότητα, όχι βέβαιο σφάλμα).
+_COORD_START = re.compile(
+    r"^\s*(?:,\s*)?(?:καθώς\s+και|όπως\s+και|και|ενώ|αλλά|as\s+well\s+as|and|while|but)\s",
+    re.IGNORECASE,
+)
+
+
+# v13: «και τον», «και με τον», «καθώς και με τον», «and with the» ...
+# Το σκέτο κόμμα επιτρέπεται μόνο ως απαρίθμηση («…, τον Ήλιο»)· το «, με τον
+# Ήλιο …» είναι αμφίσημο (μπορεί να είναι συνοδευτική φράση) -> καμία δήλωση.
+_OBJECT_COORD = re.compile(
+    r"^\s*(?:(?:,\s*)?(?:καθώς\s+και|όπως\s+και|και|as\s+well\s+as|and)\s+(?:(?:με|with)\s+)?"
+    r"|,\s+)(?:(?:τον|την|τη|το|τους|the)\s+)?$",
+    re.IGNORECASE,
+)
+# Ελληνικά: αιτιατική («και τον», «και με τον») = σίγουρα αντικείμενο, όποια
+# κι αν είναι η συνέχεια. Αγγλικά: χωρίς πτώση, άρα η φράση πρέπει να
+# τελειώνει μετά το όνομα ή να συνεχίζει με πρόθεση («in the natal chart»),
+# όχι με ρήμα («and the Sun shines …»).
+_GREEK_OBJECT = re.compile(r"(?:με|τον|την|τη|το|τους)\s+$", re.IGNORECASE)
+_CLAUSE_TAIL_END = re.compile(
+    r"^\s*(?:$|[,.;:·\u0387)(\n]|\s*(?:και|and)\s|(?:in|on|within|inside|at|of)\s)",
+    re.IGNORECASE,
+)
+
+
+def _prose_claims(text: str):
+    names = _name_matches(text)
+    prev_end = 0
+    # v12: η τελευταία ΔΗΛΩΣΗ της πρότασης (υποκείμενο, αντικείμενο, τύπος,
+    # όριο πρότασης). Ενημερώνεται σε κάθε δήλωση με ρητό υποκείμενο, ώστε
+    # ένα νέο υποκείμενο («…, η Αφροδίτη σχηματίζει…») να αντικαθιστά το προηγούμενο.
+    last = None
+    for i, ((s1, e1, n1), (s2, e2, n2)) in enumerate(zip(names, names[1:])):
+        gap = text[e1:s2]
+        left, right = _sentence_bounds(text, s1, e2)
+        same_sentence = s2 < right and not _SENTENCE_END.search(gap)
+        prefix = text[max(left, prev_end) : s1]
+        prev_end = e1
+        if not same_sentence:
+            continue
+        if n1 in ANGLE_NAMES and n2 in ANGLE_NAMES:
+            continue
+        next_start = names[i + 2][0] if i + 2 < len(names) else len(text)
+        tail_end = min(right, next_start)
+        aspect, claim_end = None, e2
+        if re.match(rf"^{_DASH}$", gap):  # Α
+            m = re.match(rf"^\s*[:—–-]?\s*\(?\s*({_ANY_ASPECT})", text[e2:tail_end], re.IGNORECASE)
+            if m:
+                aspect, claim_end = _aspect_type(m.group(1)), e2 + m.end()
+        if aspect is None and _GAP_AB.match(gap):  # Β
+            m = _PREFIX_B.search(prefix)
+            if m:
+                aspect = _aspect_type(m.group(1))
+        explicit_subject = True
+        same_claim_sentence = last is not None and last[3] == left
+        if aspect is None and _COORD_START.match(gap):  # ελλειπτικό υποκείμενο
+            elliptic = _generic_gap_aspect(_COORD_START.sub(" ", gap, count=1))
+            if elliptic and same_claim_sentence:
+                n1, aspect, explicit_subject = last[0], elliptic, False
+            elif elliptic:
+                continue  # αμφίσημο υποκείμενο: καμία δήλωση
+        # v12: πολλά αντικείμενα με κοινό τύπο: «τρίγωνο με τον Ερμή και τον Ήλιο».
+        # Μόνο αν το προηγούμενο σημείο ήταν το ΑΝΤΙΚΕΙΜΕΝΟ της τελευταίας
+        # δήλωσης, ο σύνδεσμος δεν εισάγει νέο υποκείμενο (όχι «και ο/η»), και
+        # η φράση τελειώνει μετά το νέο αντικείμενο.
+        if (
+            aspect is None
+            and same_claim_sentence
+            and last[1] == n1
+            and _OBJECT_COORD.match(gap)
+            and (_GREEK_OBJECT.search(gap) or _CLAUSE_TAIL_END.match(text[e2:right]))
+        ):
+            n1, aspect, explicit_subject = last[0], last[2], False
+        if aspect is None:  # Γ (v9: γενικό -- όχι λίστα ρημάτων/επιθέτων)
+            aspect = _generic_gap_aspect(gap)
+        if aspect is None:
+            continue
+        clause_start = left + max(
+            (m.end() for m in _CLAUSE_BOUNDARY.finditer(text[left:s1])), default=0
+        )
+        if _NEGATION.search(text[clause_start:s2]):
+            continue
+        # «Η αντίθεση ανάμεσα στον Ήλιο και τη Σελήνη δεν υπάρχει»: άρνηση
+        # ΥΠΑΡΞΗΣ μετά το ζεύγος, μέσα στην ίδια φράση.
+        after = text[e2:tail_end]
+        clause_end = min((m.start() for m in _CLAUSE_BOUNDARY.finditer(after)), default=len(after))
+        if _EXISTENCE_NEGATION.search(after[:clause_end]):
+            continue
+        last = (n1 if explicit_subject else last[0], n2, aspect, left)
+        orbs, weights = _claim_details(text[claim_end:tail_end])
+        yield n1, n2, aspect, tuple(orbs), tuple(weights), text[left:right].strip()[:200]
+
+
+def _aspect_claims(text: str):
+    """Όλες οι ρητές δηλώσεις όψης του κειμένου, χωρίς διπλότυπα:
+    (Α, Β, τύπος, (orb, …), (βαρύτητα, …), απόσπασμα)."""
+    text = _normalize_prime_marks(text)
+    seen, out = set(), []
+    for claim in list(_prose_claims(text)) + list(_table_row_claims(text)):
+        key = (frozenset(claim[:2]),) + tuple(claim[2:5])
+        if key not in seen:
+            seen.add(key)
+            out.append(claim)
+    return out
+
+
+def _aspect_claim_problems(chart, text: str):
+    """Επιστρέφει (undeclared, mismatched):
+    undeclared: (Α, Β, τύπος, απόσπασμα) -- ζεύγος που δεν υπάρχει στον χάρτη.
+    mismatched: (όψη χάρτη, περιγραφή διαφοράς, απόσπασμα) -- γνωστό ζεύγος
+                με λάθος τύπο, orb ή βαρύτητα στη ΣΥΓΚΕΚΡΙΜΕΝΗ δήλωση."""
+    by_pair = {frozenset((a.first, a.second)): a for a in chart.aspects}
+    undeclared, mismatched = [], []
+    for n1, n2, aspect, orbs, weights, snippet in _aspect_claims(text):
+        a = by_pair.get(frozenset((n1, n2))) if n1 != n2 else None
+        if a is None:
+            undeclared.append((n1, n2, aspect, snippet))
+            continue
+        diffs = []
+        if aspect != a.aspect:
+            diffs.append(f"τύπος «{aspect}» αντί για «{a.aspect}»")
+        for orb in orbs:
+            if _orb_differs(orb, a):
+                diffs.append(f"orb {orb[0]} αντί για {a.orb_text}")
+        for weight in weights:
+            if weight != a.weight:
+                diffs.append(f"βαρύτητα «{weight}» αντί για «{a.weight}»")
+        if diffs:
+            mismatched.append((a, "; ".join(diffs), snippet))
+    return undeclared, mismatched
+
+
+# Συμβατότητα με παλαιότερα tests/κλήσεις.
+def _undeclared_aspect_claims(chart, text: str):
+    return _aspect_claim_problems(chart, text)[0]
+
+
+# Γραμμές πίνακα. Ο reference_loader.docx_text() γράφει κάθε γραμμή πίνακα
+# DOCX ως «κελί | κελί | …» -- η ίδια μορφή με το Παράρτημα και με πίνακες
+# markdown. Μια γραμμή θεωρείται δήλωση όψης όταν τα κελιά της περιέχουν
+# ΑΚΡΙΒΩΣ δύο σημεία (σε ένα κελί «Α–Β» ή σε δύο κελιά) και ΑΚΡΙΒΩΣ ένα κελί
+# τύπου όψης (προαιρετικά με orb σε παρένθεση). Κελιά με πρόζα αγνοούνται
+# εδώ (τα καλύπτει ο έλεγχος προτάσεων).
+_CELL_NAMES = re.compile(
+    rf"^{_ART}(?P<a>.+?)(?:\s*[–—/-]\s*{_ART}(?P<b>.+))?$", re.IGNORECASE
+)
+_CELL_ORB = re.compile(rf"^(?:orb\s*[:=]?\s*)?(?:{_DMS}|{_DEC})$", re.IGNORECASE)
+
+
+def _cell_point_names(cell: str) -> list[str] | None:
+    m = _CELL_NAMES.match(cell)
+    if not m:
+        return None
+    names = []
+    for part in (m.group("a"), m.group("b")):
+        if part is None:
+            continue
+        hit = next(
+            (k for k, f in _NAME_FORMS.items() if re.fullmatch(f, part.strip(), re.IGNORECASE)),
+            None,
+        )
+        if hit is None:
+            return None
+        names.append(hit)
+    return names
+
+
+_CELL_LABEL = re.compile(
+    r"^(?:Ζεύγος|Όψη|Τύπος(?:\s+όψης)?|Orb|Κατηγορία|Βαρύτητα|Pair|Aspect|Type|Category|Weight)\s*:\s*",
+    re.IGNORECASE,
+)
+
+
+def _classify_row(line: str):
+    """Αυστηρή ανάγνωση γραμμής πίνακα. Επιστρέφει (kind, payload):
+      ("none", None)        -- δεν είναι γραμμή όψης (π.χ. πίνακας θέσεων)
+      ("claim", claim)      -- πλήρως αναγνωσμένη γραμμή όψης
+      ("malformed", λόγος)  -- μοιάζει με γραμμή όψης αλλά δεν διαβάζεται πλήρως
+    v10: μια γραμμή γίνεται δεκτή ως δομημένη ΜΟΝΟ αν διαβάστηκε κάθε κελί
+    της. Πριν, π.χ. το «orb = 0°01′» δεν διαβαζόταν, αλλά η γραμμή εξαιρούνταν
+    από τον έλεγχο αριθμών -- η τιμή υπήρχε χωρίς να συγκρίνεται."""
+    cells = [
+        _CELL_LABEL.sub("", c.strip()) for c in _normalize_prime_marks(line).split("|") if c.strip()
+    ]
+    names, aspects, orbs, weights, other = [], [], [], [], []
+    for cell in cells:
+        hit = None
+        for k, f in _ASPECT_FORMS.items():
+            m = re.fullmatch(
+                rf"{f}(?:\s*150°)?(?:\s*\(\s*(?:orb\s*[:=]?\s*)?(?:{_DMS}|{_DEC})\s*\))?",
+                cell, re.IGNORECASE,
+            )
+            if m:
+                hit = k
+                if m.group(1) or m.group(3):
+                    orbs.append(_orb_value(m))
+                break
+        if hit:
+            aspects.append(hit)
+            continue
+        m = _CELL_ORB.match(cell)
+        if m:
+            orbs.append(_orb_value(m))
+            continue
+        cell_weights = _weights_in(cell)
+        if cell_weights and re.fullmatch(rf"(?:{_ANY_WEIGHT}[\s,/;]*)+", cell, re.IGNORECASE):
+            weights.extend(cell_weights)
+            continue
+        found = _cell_point_names(cell)
+        if found:
+            names.extend(found)
+            continue
+        other.append(cell)
+    # Γραμμή όψης = τουλάχιστον δύο σημεία ΚΑΙ τύπος όψης ή orb.
+    # (Πίνακας θέσεων «Ήλιος | Λέων | 12°30′» έχει ένα σημείο -> δεν είναι.)
+    if len(names) < 2 or not (aspects or orbs):
+        return "none", None
+    if len(names) == 2 and names[0] == names[1]:
+        return "malformed", f"το ίδιο σημείο ({names[0]}) δύο φορές"
+    if len(names) != 2:
+        return "malformed", f"{len(names)} σημεία αντί για ακριβώς 2"
+    if len(aspects) != 1:
+        return "malformed", ("λείπει ο τύπος όψης" if not aspects else f"{len(aspects)} τύποι όψης στην ίδια γραμμή")
+    technical_other = [c for c in other if re.search(r"\d|orb", c, re.IGNORECASE) or _weights_in(c) or _aspect_type(c)]
+    if technical_other:
+        return "malformed", "μη αναγνώσιμο τεχνικό κελί: «" + technical_other[0] + "»"
+    n1, n2 = names
+    if n1 in ANGLE_NAMES and n2 in ANGLE_NAMES:
+        return "none", None
+    return "claim", (n1, n2, aspects[0], tuple(orbs), tuple(weights), line.strip())
+
+
+def _table_row_claims(text: str):
+    for line in text.splitlines():
+        if "|" in line:
+            kind, payload = _classify_row(line)
+            if kind == "claim":
+                yield payload
+
+
+
+
+
+
+# ---------------------------------------------------------------------------
+# v9: ΔΟΜΗΜΕΝΗ ΜΟΡΦΗ (Odigies v6, κανόνας 5).
+# Κάθε όψη με αριθμητικά στοιχεία γράφεται ΜΟΝΟ σε δική της γραμμή:
+#     Ήλιος–Σελήνη Τετράγωνο (orb 1°13′, Στενή/ισχυρή)
+# (ή ως γραμμή πίνακα στο Παράρτημα). Η πρόζα ερμηνεύει χωρίς αριθμούς orb.
+# Έτσι ο έλεγχος δεν χρειάζεται να μαντεύει διατυπώσεις: κάθε αριθμός τύπου
+# «1°13′» / «0.5°» εκτός δομημένης γραμμής απορρίπτεται, εκτός αν είναι
+# προφανώς ΘΕΣΗ (ακολουθεί/προηγείται ζώδιο) ή απόσταση από ακμή.
+# ---------------------------------------------------------------------------
+_ANY_NAME = "(?:" + "|".join(_NAME_FORMS.values()) + ")"
+_ANY_WEIGHT = "(?:" + "|".join(_WEIGHT_FORMS.values()) + ")"
+_STRUCTURED_LINE = re.compile(
+    rf"^\s*(?:[-•*▪●]\s*)?{_ANY_NAME}\s*[–—-]\s*{_ANY_NAME}\s*:?\s*{_ANY_ASPECT}"
+    rf"\s*\(\s*orb\s+\d{{1,2}}°\d{{2}}′\s*,\s*{_ANY_WEIGHT}\s*\)\s*\.?\s*$",
+    re.IGNORECASE,
+)
+_TECH_VALUE = re.compile(rf"(?<![\d.,]){_DMS}|(?<![\d.,]){_DEC}")
+_SIGN_WORD = (
+    r"(?:Κρι\w*|Ταύρ\w*|Δίδυμ\w*|Διδύμ\w*|Καρκίν\w*|Λέ(?:ων|οντ\w*)|Παρθέν\w*|Ζυγ\w*|"
+    r"Σκορπι\w*|Τοξότ\w*|Αιγόκερ\w*|Υδροχό\w*|Ιχθ\w*|Aries|Taurus|Gemini|Cancer|Leo|"
+    r"Virgo|Libra|Scorpio|Sagittarius|Capricorn|Aquarius|Pisces)"
+)
+_POSITION_AFTER = re.compile(
+    rf"^\s*(?:(?:του|της|των|στον|στην|στους|στο|in|of)\s+)?{_SIGN_WORD}", re.IGNORECASE
+)
+_POSITION_BEFORE = re.compile(rf"{_SIGN_WORD}\s*[,:]?\s*(?:στις\s+|at\s+)?$", re.IGNORECASE)
+_CUSP_DISTANCE = re.compile(
+    r"^\s*(?:από\s+(?:την\s+|τη\s+)?(?:επόμενη\s+)?ακμ\w*|πριν\s+από|before\s+the|"
+    r"from\s+the\s+(?:next\s+)?cusp)",
+    re.IGNORECASE,
+)
+
+
+def _is_structured(line: str) -> bool:
+    if _STRUCTURED_LINE.match(_normalize_prime_marks(line)):
+        return True
+    if "|" not in line:
+        return False
+    kind, _ = _classify_row(line)
+    if kind == "claim":
+        return True
+    # Πίνακας βασικών δεδομένων/ακμών (Odigies §12): «Ήλιος | Λέων | 12°30′».
+    # Ο αριθμός είναι θέση· η γραμμή δεν είναι γραμμή όψης.
+    if kind == "none":
+        # v11: η εξαίρεση θέσης ΔΕΝ καλύπτει γραμμή με τύπο όψης ή «orb».
+        if re.search(rf"\borb\b|{_ANY_ASPECT}", line, re.IGNORECASE):
+            return False
+        cells = [c.strip() for c in line.split("|")]
+        return any(re.search(rf"(?<!\w){_SIGN_WORD}", c, re.IGNORECASE) for c in cells)
+    return True  # malformed: αναφέρεται χωριστά, όχι δεύτερη φορά ως «αριθμός εκτός δομής»
+
+
+def _stray_technical_values(text: str) -> list[tuple[str, str]]:
+    """(τιμή, απόσπασμα) για αριθμούς τύπου orb ΕΚΤΟΣ δομημένης γραμμής."""
+    found = []
+    for line in _normalize_prime_marks(text).splitlines():
+        if not _TECH_VALUE.search(line) or _is_structured(line):
+            continue
+        for m in _TECH_VALUE.finditer(line):
+            after, before = line[m.end():], line[: m.start()]
+            if _POSITION_AFTER.match(after) or _POSITION_BEFORE.search(before):
+                continue  # θέση σε ζώδιο: «12°30′ Λέοντα», «Λέων 12°30′»
+            if _CUSP_DISTANCE.match(after) or re.search(r"(?:απόσταση|distance)\s*(?:\w+\s+){0,2}$", before, re.I):
+                continue  # απόσταση από ακμή
+            found.append((m.group(0), line.strip()[:200]))
+    return found
+
+
+_PAIR_START = re.compile(
+    rf"^\s*(?:[-•*▪●]\s*)?(?P<a>{_ANY_NAME})\s*[–—-]\s*(?P<b>{_ANY_NAME})(?!\w)", re.IGNORECASE
+)
+
+
+def _canonical(name_text: str):
+    return next(
+        (k for k, f in _NAME_FORMS.items() if re.fullmatch(f, name_text.strip(), re.IGNORECASE)), None
+    )
+
+
+def _malformed_aspect_rows(text: str) -> list[tuple[str, str]]:
+    """Γραμμές όψεων (πίνακα ή «Α–Β …» με orb) που δεν διαβάζονται πλήρως."""
+    out = []
+    for line in _normalize_prime_marks(text).splitlines():
+        if "|" in line:
+            kind, payload = _classify_row(line)
+            if kind == "malformed":
+                out.append((payload, line.strip()[:200]))
+            continue
+        m = _PAIR_START.match(line)
+        if not m or not (_TECH_VALUE.search(line) or re.search(r"\borb\b", line, re.I)):
+            continue
+        a, b = _canonical(m.group("a")), _canonical(m.group("b"))
+        if a and a == b:
+            out.append((f"το ίδιο σημείο ({a}) δύο φορές", line.strip()[:200]))
+        elif not _STRUCTURED_LINE.match(line):
+            out.append(("δεν ακολουθεί τη μορφή «Α–Β Τύπος (orb X°YY′, Κατηγορία)»", line.strip()[:200]))
+    return out

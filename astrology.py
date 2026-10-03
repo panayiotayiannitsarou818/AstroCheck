@@ -83,6 +83,53 @@ def orb_to_text(orb: float) -> str:
     return f"{d}°{m:02d}′"
 
 
+# Κανόνας 6Β (Odigies): σύνοδοι κάθε πλανήτη/σημείου με Ωροσκόπο και
+# Μεσουράνημα ελέγχονται ρητά, ακόμη κι αν λείπουν από τον πίνακα του
+# Astrodienst. Ο υπολογισμός γίνεται ΕΔΩ, σε Python -- όχι από το LLM.
+# Στα fixtures ο πίνακας καλύπτει ήδη συνόδους με γωνίες έως ~8°, άρα
+# πρακτικά συμπληρώνεται μόνο το παράθυρο ~8°–10°.
+ANGLE_CONJUNCTION_MAX_ORB = 10.0
+POSITION_DERIVED_SOURCE = "Υπολογισμός από τις θέσεις (λείπει από τον πίνακα Astrodienst)"
+_ANGLES = ("Ωροσκόπος", "Μεσουράνημα")
+
+
+def angle_conjunctions_from_positions(
+    points: list[Point], aspects: list[Aspect], max_orb: float = ANGLE_CONJUNCTION_MAX_ORB
+) -> list[Aspect]:
+    """Σύνοδοι με Ωροσκόπο/Μεσουράνημα που προκύπτουν από τις θέσεις αλλά
+    ΔΕΝ υπάρχουν ήδη στις όψεις (πίνακας ή παραγόμενες). Δεν αντικαθιστά
+    ποτέ όψη του πίνακα· μόνο συμπληρώνει."""
+    existing = {
+        frozenset((a.first, a.second)) for a in aspects if a.aspect == "Σύνοδος"
+    }
+    by_name = {p.name: p for p in points}
+    result = []
+    for angle_name in _ANGLES:
+        angle = by_name.get(angle_name)
+        if angle is None:
+            continue
+        for p in points:
+            if p.name in _ANGLES:
+                continue
+            if frozenset((p.name, angle_name)) in existing:
+                continue
+            orb = angular_distance(p.absolute, angle.absolute)
+            if orb <= max_orb:
+                result.append(
+                    Aspect(
+                        p.name,
+                        angle_name,
+                        "Σύνοδος",
+                        orb,
+                        orb_to_text(orb),
+                        orb_weight(orb),
+                        POSITION_DERIVED_SOURCE,
+                        None,
+                    )
+                )
+    return result
+
+
 def south_node_aspects(aspects: list[Aspect]) -> list[Aspect]:
     """Derive South Node aspects from the Astrodienst True Node axis.
 

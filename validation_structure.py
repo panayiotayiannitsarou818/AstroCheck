@@ -389,3 +389,144 @@ def _sign_claim_errors(chart, text: str) -> list[tuple[str, str, str, str]]:
                     )
                 )
     return errors
+
+
+# ---------------------------------------------------------------------------
+# v4: ο κυβερνήτης ελέγχεται απέναντι στον ΠΡΑΓΜΑΤΙΚΟ χάρτη (ζώδιο ακμής),
+# όχι μόνο για συνέπεια κειμένου–πλαισίου. Αν και τα δύο έγραφαν τον ίδιο
+# λάθος πλανήτη, ο έλεγχος v3 περνούσε.
+# ---------------------------------------------------------------------------
+_LEADING_ARTICLE = re.compile(r"\s*(?:(?:ο|η|τον|την|του|της|the)\s+)?", re.IGNORECASE)
+_NAME_SEPARATOR = re.compile(r"\s*(?:,|/|&|\bκαι\b|\band\b)\s*", re.IGNORECASE)
+
+
+def _leading_ruler_names(box_text: str) -> list[str]:
+    """Ονόματα στην ΑΡΧΗ της γραμμής «Κυβερνήτης: …» (π.χ. «Ποσειδώνας,
+    Δίας» ή «ο Δίας / Ποσειδώνας»). Σταματά στην πρώτη λέξη που δεν είναι
+    όνομα ή διαχωριστικό, ώστε ένα σχόλιο όπως «Δίας, σε τετράγωνο με Άρη»
+    να μη θεωρηθεί ότι δηλώνει τον Άρη ως κυβερνήτη."""
+    names, pos = [], 0
+    while True:
+        pos = _LEADING_ARTICLE.match(box_text, pos).end()
+        hit = None
+        for canonical, form in _NAME_FORMS.items():
+            m = re.compile(rf"{form}(?!\w)", re.IGNORECASE).match(box_text, pos)
+            if m and (hit is None or m.end() > hit[1]):
+                hit = (canonical, m.end())
+        if not hit:
+            return names
+        if hit[0] not in names:
+            names.append(hit[0])
+        pos = hit[1]
+        sep = _NAME_SEPARATOR.match(box_text, pos)
+        if not sep:
+            return names
+        pos = sep.end()
+
+
+# v9: ο ρόλος (κύριος/παραδοσιακός) αναγνωρίζεται από τη λέξη-ρόλο και το
+# ΠΛΗΣΙΕΣΤΕΡΟ όνομα πλανήτη μέσα στην ίδια φράση -- όχι από συγκεκριμένη
+# σειρά λέξεων. Έτσι καλύπτονται εξίσου «Κύριος κυβερνήτης είναι ο Ουρανός»,
+# «Ο Κρόνος είναι ο κύριος κυβερνήτης», «Ουρανός — παραδοσιακά Κρόνος» κ.λπ.
+_ROLE_MODERN = re.compile(
+    r"(?<!\w)(?:κύρι\w*|σύγχρον\w*)\s+(?:\w+\s+)?κυβερν\w*"
+    r"|(?<!\w)(?:main|modern|primary|principal)\s+(?:\w+\s+)?ruler\w*",
+    re.IGNORECASE,
+)
+_ROLE_TRAD = re.compile(r"(?<!\w)(?:παραδοσιακ\w*|traditional\w*|classical\w*)", re.IGNORECASE)
+# v10: το κόμμα και η άνω-κάτω τελεία ΔΕΝ χωρίζουν όνομα από ρόλο
+# («Κύριος κυβερνήτης: Κρόνος», «Ο Κρόνος, κύριος κυβερνήτης του Οίκου»).
+# Χωρίζουν: τέλος πρότασης, άνω τελεία, παύλα, παρένθεση και σύνδεσμοι που
+# εισάγουν ΑΛΛΟ υποκείμενο («και», «ενώ», «αλλά»). v11: ούτε η παρένθεση
+# χωρίζει («Ο Κρόνος (κύριος κυβερνήτης)»).
+_ROLE_SCOPE_BREAK = re.compile(
+    r"[.;·\u0387\n—–]|(?<!\w)(?:και|ενώ|αλλά|όμως|and|while|but|whereas)(?!\w)",
+    re.IGNORECASE,
+)
+_RULER_PLANETS = sorted({r for pair in RULERS.values() for r in pair if r})
+
+
+def _phrase_bounds(text: str, start: int, end: int) -> tuple[int, int]:
+    left = max((m.end() for m in _ROLE_SCOPE_BREAK.finditer(text, 0, start)), default=0)
+    m = _ROLE_SCOPE_BREAK.search(text, end)
+    return left, (m.start() if m else len(text))
+
+
+def _ruler_claims_in_body(segment: str) -> list[tuple[str, str]]:
+    """(όνομα, ρόλος) με ρόλο «κύριος» ή «παραδοσιακός»."""
+    claims = []
+    markers = [(m, "κύριος") for m in _ROLE_MODERN.finditer(segment)]
+    markers += [(m, "παραδοσιακός") for m in _ROLE_TRAD.finditer(segment)]
+    for m, role in markers:
+        left, right = _phrase_bounds(segment, m.start(), m.end())
+        best = None
+        for name in _RULER_PLANETS:
+            for nm in re.finditer(rf"(?<!\w){_NAME_FORMS[name]}(?!\w)", segment[left:right], re.IGNORECASE):
+                ns, ne = left + nm.start(), left + nm.end()
+                dist = m.start() - ne if ne <= m.start() else ns - m.end()
+                if dist < 0:
+                    continue
+                if best is None or dist < best[0]:
+                    best = (dist, name)
+        if best and (best[1], role) not in claims:
+            claims.append((best[1], role))
+    return claims
+
+
+def _ruler_errors(chart, segments: dict[int, str]):
+    """Επιστρέφει (wrong_ruler_claims, missing_ruler_box).
+    wrong_ruler_claims: (Οίκος, δηλωμένος, αναμενόμενος, πού).
+    Στο κυρίως κείμενο ελέγχεται και ο ΡΟΛΟΣ: ο κύριος πρέπει να είναι ο
+    σύγχρονος κυβερνήτης του ζωδίου της ακμής, ο παραδοσιακός ο παραδοσιακός
+    (όπου δεν υπάρχει ξεχωριστός, ο ίδιος με τον κύριο). Στο πλαίσιο σύνοψης
+    ελέγχεται μόνο ότι κάθε όνομα ανήκει στους κυβερνήτες της ακμής."""
+    wrong, missing_box = [], []
+    for n in range(1, 13):
+        segment = segments.get(n)
+        if not segment:
+            continue  # ήδη καταγράφηκε στο missing_houses
+        modern, traditional = RULERS[chart.cusps[n - 1].sign]
+        allowed = [r for r in (modern, traditional) if r]
+        for name, role in _ruler_claims_in_body(_BOX_RULER_LINE.sub("", segment)):
+            expected = modern if role == "κύριος" else (traditional or modern)
+            if name != expected:
+                wrong.append((n, name, expected, f"κείμενο ({role})"))
+        box_text = _box_ruler_text(segment)
+        box_names = _leading_ruler_names(box_text) if box_text is not None else []
+        if not box_names:
+            missing_box.append(n)
+            continue
+        for name in box_names:
+            if name not in allowed:
+                wrong.append((n, name, " / ".join(allowed), "πλαίσιο"))
+        # v8 (Odigies §3): στο πλαίσιο σύνοψης πρώτα ο σύγχρονος κυβερνήτης.
+        if box_names and modern in box_names and box_names[0] != modern:
+            wrong.append((n, f"(σειρά) {box_names[0]} πρώτος", modern, "πλαίσιο"))
+        # v8 (Odigies §3 και ενότητα Οίκου): και το ΚΥΡΙΩΣ ΚΕΙΜΕΝΟ πρέπει να
+        # ονομάζει κάθε κυβερνήτη ως κυβερνήτη. Ελαστική σύνταξη: το όνομα
+        # αρκεί να βρίσκεται στην ίδια πρόταση με «κυβερνήτ…»/«ruler», όχι
+        # σε συγκεκριμένη φράση. Η γραμμή του πλαισίου δεν μετράει εδώ.
+        body = _BOX_RULER_LINE.sub("", segment)
+        for name in allowed:
+            if not _named_as_ruler(body, name):
+                wrong.append((n, f"(λείπει) {name}", " / ".join(allowed), "κυρίως κείμενο"))
+        # v7: το πλαίσιο πρέπει να δηλώνει ΟΛΟΥΣ τους κυβερνήτες της ακμής
+        # (σύγχρονο και, όπου υπάρχει, παραδοσιακό) -- όχι μόνο επιτρεπτά ονόματα.
+        for name in allowed:
+            if name not in box_names:
+                wrong.append((n, f"(λείπει) {name}", " / ".join(allowed), "πλαίσιο"))
+    return wrong, missing_box
+
+
+# v10: και η λέξη-ρόλο «παραδοσιακά» μετρά ως δήλωση κυβερνήτη -- η ίδια η
+# διατύπωση των οδηγιών είναι «Υδροχόος: Ουρανός — παραδοσιακά Κρόνος».
+_RULER_WORD = r"(?:κυβερν\w*|παραδοσιακ\w*|rul(?:er|ers|ed|es|ing)\b|traditional\w*)"
+
+
+def _named_as_ruler(body: str, name: str) -> bool:
+    form = _NAME_FORMS[name]
+    pattern = (
+        rf"{_RULER_WORD}[^.;\n]{{0,100}}?(?<!\w){form}(?!\w)"
+        rf"|(?<!\w){form}(?!\w)[^.;\n]{{0,100}}?{_RULER_WORD}"
+    )
+    return re.search(pattern, body, re.IGNORECASE) is not None

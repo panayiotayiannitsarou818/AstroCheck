@@ -45,9 +45,9 @@ Weight categories (copy exactly, including the slash):
 
 Rules for English output:
 1. Each House heading on its own line, exactly: {headings}.
-2. Write every aspect as: <Point>–<Point> <aspect type> (orb X°YY′, <weight category>). Keep the symbols ° and ′ exactly as in the data.
+2. STRUCTURED FORMAT (rule 5 of the v6 instructions): at the start of each House, write its aspects one per line, exactly as: <Point>–<Point> <aspect type> (orb X°YY′, <weight category>). Keep the symbols ° and ′ exactly as in the data. Orb numbers appear ONLY in these lines and in the Appendix — never inside prose, summary boxes or final sections; the prose interprets the aspects without numbers. Placements in signs (e.g. 12°30′ Leo) and distances from a cusp are allowed as usual.
 3. In each House, name the ruler with the sentence «The modern ruler is <Planet>.» and, where a traditional ruler exists, «The traditional ruler is <Planet>.»
-4. Summary box of each House, one label per line: «Key strength:», «Key challenge:», «Ruler:», «Final conclusion:». The «Ruler:» line must name the same ruler(s) as the main text of the same House.
+4. Summary box of each House, one label per line: «Key strength:», «Key challenge:», «Ruler:», «Final conclusion:». The «Ruler:» line is mandatory, names the modern ruler first and then the traditional ruler where one exists, and must agree with the main text of the same House.
 5. State placements explicitly: «<Planet> is in the <N>th House», «<Planet> in <Sign>».
 6. The mandatory in-House subsections are titled «Synthesis with the rest of the chart» and «Practical application».
 7. Final sections, each title on its own line, exactly:
@@ -190,7 +190,7 @@ def build_master_prompt(
     language,
     instructions_text,
     style_text,
-    instructions_name="Ενσωματωμένες οδηγίες v5.3",
+    instructions_name="Ενσωματωμένες οδηγίες v6",
     style_name="Ενσωματωμένος καθαρός οδηγός ύφους",
 ):
     display_name = chart.name
@@ -207,7 +207,7 @@ def build_master_prompt(
 Χρησιμοποίησε το «{instructions_name}» ως δεσμευτική προδιαγραφή και το «{style_name}» αποκλειστικά ως πρότυπο ύφους, βάθους, δομής και μορφοποίησης. Όλα τα αστρολογικά δεδομένα προέρχονται αποκλειστικά από το νέο PDF και τον παρακάτω ελεγμένο πίνακα. Μην μεταφέρεις δεδομένα ή προσωπικές πληροφορίες από το πρότυπο.
 
 ΑΠΑΡΑΒΑΤΟ ΟΡΙΟ ΠΗΓΩΝ
-Ο οδηγός ύφους δεν αποτελεί πηγή δεδομένων ή ερμηνευτικών συμπερασμάτων. Σε περίπτωση σύγκρουσης υπερισχύουν οι οδηγίες v5 και τα ελεγμένα δεδομένα του νέου χάρτη. Απαγορεύεται επίσης να χρησιμοποιήσεις μνήμη, προηγούμενες συνομιλίες ή εξωτερική γνώση για προσωπικά γεγονότα του ατόμου.
+Ο οδηγός ύφους δεν αποτελεί πηγή δεδομένων ή ερμηνευτικών συμπερασμάτων. Σε περίπτωση σύγκρουσης υπερισχύουν οι οδηγίες v6 και τα ελεγμένα δεδομένα του νέου χάρτη. Απαγορεύεται επίσης να χρησιμοποιήσεις μνήμη, προηγούμενες συνομιλίες ή εξωτερική γνώση για προσωπικά γεγονότα του ατόμου.
 
 Γλώσσα τελικού Word: {language}.
 Όνομα: {display_name}
@@ -220,9 +220,11 @@ def build_master_prompt(
 2. Μην παραλείψεις κανένα τετράγωνο ή αντίθεση του Astrodienst, ακόμη και όταν είναι πολύ πλατύ/δευτερεύον.
 3. Η ίδια όψη πρέπει να έχει παντού το ίδιο orb και την ίδια κατηγορία.
 3Α. Αντέγραψε ακριβώς από τα ελεγμένα δεδομένα και τα τρία πεδία κάθε όψης: ΤΥΠΟ ΟΨΗΣ, ORB και ΚΑΤΗΓΟΡΙΑ ΒΑΡΥΤΗΤΑΣ. Απαγορεύεται να μετατρέψεις αντίθεση σε τετράγωνο ή να αλλάξεις «Πλατιά αλλά έγκυρη» σε «Πολύ πλατιά/δευτερεύουσα», ακόμη και σε συνθετική ή τελική ενότητα.
+3Β. ΔΟΜΗΜΕΝΗ ΜΟΡΦΗ (κανόνας 5 των οδηγιών v6): στην αρχή κάθε Οίκου γράψε τις όψεις του, μία ανά γραμμή, ακριβώς ως «Ήλιος–Σελήνη Τετράγωνο (orb 1°13′, Στενή/ισχυρή)». Αριθμοί orb γράφονται ΜΟΝΟ σε αυτές τις γραμμές και στο Παράρτημα — ποτέ μέσα σε πρόζα, σε πλαίσιο σύνοψης ή σε τελικές ενότητες. Η πρόζα ερμηνεύει τις όψεις χωρίς αριθμούς. Θέσεις σε ζώδιο (π.χ. 12°30′ Λέοντα) και αποστάσεις από ακμή επιτρέπονται κανονικά.
+3Γ. ΚΥΒΕΡΝΗΤΕΣ (κανόνας 3): στο πλαίσιο σύνοψης κάθε Οίκου η γραμμή «Κυβερνήτης: <σύγχρονος>, <παραδοσιακός>» είναι υποχρεωτική, με τον σύγχρονο πρώτο (ο παραδοσιακός μόνο όπου υπάρχει). Στο κυρίως κείμενο ονόμασε ρητά τον κύριο κυβερνήτη και, όπου υπάρχει, τον παραδοσιακό.
 4. Χρησιμοποίησε προσεκτική, πιθανική, μη μοιρολατρική και μη διαγνωστική γλώσσα.
 5. Η Θεωρία των Μοιρών είναι μόνο συμπληρωματική και ακολουθεί ζώδιο, Οίκο, όψεις και κυβερνήτη.
-6. Κάθε Οίκος να είναι συνεχές συνθετικό κείμενο και όχι ασύνδετη λίστα.
+6. Μετά τις δομημένες γραμμές όψεων, κάθε Οίκος να είναι συνεχές συνθετικό κείμενο και όχι ασύνδετη λίστα.
 7. Όταν μια όψη αφορά τον Ωροσκόπο ή το Μεσουράνημα και έχει σημείωση σε αγκύλες [...], ενσωμάτωσε τη σημασία της -- ότι ενεργοποιείται ταυτόχρονα το απέναντι σημείο του άξονα (Δύση/Πυθμένας Ουρανού). ΜΗΝ τη γράψεις ως δεύτερη, ανεξάρτητη όψη με δικό της orb· είναι η ίδια όψη, από την άλλη άκρη του άξονα.
 
 ΕΛΕΓΜΕΝΑ ΔΕΔΟΜΕΝΑ ΑΝΑ ΟΙΚΟ
@@ -242,9 +244,9 @@ def build_master_prompt(
 ΜΟΡΦΟΠΟΙΗΣΗ
 Παράδωσε καλαίσθητο Word με τίτλο, υπότιτλο, μεθοδολογία, βασικά δεδομένα, αρίθμηση σελίδων και κάθε Οίκο κατά προτίμηση σε νέα σελίδα. Κράτησε κάθε πλαίσιο σύνοψης ολόκληρο στην ίδια σελίδα.
 
-================ ΠΛΗΡΕΙΣ ΔΕΣΜΕΥΤΙΚΕΣ ΟΔΗΓΙΕΣ v5 ================
+================ ΠΛΗΡΕΙΣ ΔΕΣΜΕΥΤΙΚΕΣ ΟΔΗΓΙΕΣ v6 ================
 {instructions_text}
-================ ΤΕΛΟΣ ΟΔΗΓΙΩΝ v5 ================
+================ ΤΕΛΟΣ ΟΔΗΓΙΩΝ v6 ================
 
 ================ ΚΑΘΑΡΟΣ ΟΔΗΓΟΣ ΥΦΟΥΣ — ΟΧΙ ΠΗΓΗ ΔΕΔΟΜΕΝΩΝ ================
 {style_text}

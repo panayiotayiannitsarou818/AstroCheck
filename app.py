@@ -342,7 +342,7 @@ instructions_text = (
     docx_text(instructions.getvalue()) if instructions else default_instructions_text
 )
 style_text = docx_text(style.getvalue()) if style else default_style_text
-instructions_name = instructions.name if instructions else "Ενσωματωμένες οδηγίες v5.3"
+instructions_name = instructions.name if instructions else "Ενσωματωμένες οδηγίες v6"
 style_name = style.name if style else "Ενσωματωμένος καθαρός οδηγός ύφους"
 
 # Ό,τι ακολουθεί (εντολή, έγγραφα, μηνύματα) χρησιμοποιεί τον χάρτη με τις
@@ -370,7 +370,7 @@ with tab4:
             "Βόρειος Δεσμός": any(p.name == "Βόρειος Δεσμός" for p in chart.points),
             "Νότιος Δεσμός": any(p.name == "Νότιος Δεσμός" for p in chart.points),
             "Πίνακας όψεων": bool(chart.aspects),
-            "Οδηγίες v5.3 μόνιμα ενσωματωμένες": bool(instructions_text),
+            "Οδηγίες v6 μόνιμα ενσωματωμένες": bool(instructions_text),
             "Καθαρός οδηγός ύφους ενσωματωμένος": bool(style_text),
         }
         ready = all(checklist.values())
