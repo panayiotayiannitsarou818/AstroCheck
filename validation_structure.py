@@ -209,7 +209,20 @@ def _location_claim_errors(chart, text: str) -> list[tuple[str, int, int, str]]:
             rf"([^—.!?\n]{{2,55}})",
             re.IGNORECASE,
         )
-        numeric_matches = list(numeric.finditer(text)) + list(numeric_en.finditer(text))
+        # v14: χωρίς ρήμα -- «Με τον Ήλιο στον 7ο Οίκο …», «Ο Άρης του 7ου Οίκου».
+        # Μόνο όταν ο Οίκος ακολουθεί ΑΜΕΣΩΣ το όνομα.
+        bare = re.compile(
+            rf"(?<!\w){name}(?:\s+σου)?\s+(?:στον|του)\s+(\d{{1,2}})\s*(?:ος|ου|ο)?\s+Οίκ",
+            re.IGNORECASE,
+        )
+        bare_matches = [
+            m
+            for m in bare.finditer(text)
+            if not re.search(r"κυβερν\w*[^.!?\n]{0,30}$", text[max(0, m.start() - 45) : m.start()], re.IGNORECASE)
+        ]
+        numeric_matches = (
+            list(numeric.finditer(text)) + list(numeric_en.finditer(text)) + bare_matches
+        )
         thematic_matches = list(thematic.finditer(text)) + list(thematic_en.finditer(text))
         for match in numeric_matches:
             if _claim_belongs_to_other_point(match.group(0), point.name):
@@ -218,6 +231,9 @@ def _location_claim_errors(chart, text: str) -> list[tuple[str, int, int, str]]:
                 continue
             claimed = int(next(g for g in match.groups() if g))
             if 1 <= claimed <= 12 and claimed != point.house:
+                context = _claim_context(text, match.start(), match.end(), bounds)
+                if any(e[0] == point.name and e[1] == claimed and e[3] == context for e in errors):
+                    continue  # η ίδια δήλωση από δύο μοτίβα
                 errors.append(
                     (
                         point.name,
@@ -263,12 +279,18 @@ def _unauthorized_personal_claims(personal: dict | None, text: str) -> list[tupl
     """
     personal = personal or {}
     checks = []
+    # v14: μόνο ΡΗΤΕΣ δηλώσεις για το πρόσωπο (β΄ πρόσωπο / κτητικό). Σκέτες
+    # λέξεις όπως «καθηγητής», «teacher», «burnout», «ως μητέρα» είναι συνήθης
+    # ερμηνευτική γλώσσα («ο Κρόνος σαν αυστηρός καθηγητής») και απέρριπταν
+    # σωστές αναλύσεις.
     if not (personal.get("Επάγγελμα και σπουδές") or "").strip():
         checks.append(
             (
                 "επάγγελμα/σπουδές",
-                r"[^.!?\n]{0,45}(?:καθηγήτρια|καθηγητής|διδασκαλία\s+(?:της\s+)?φυσικής|στο\s+επάγγελμά\s+σου|εργάζεσαι\s+σε\s+σχολ|έχεις\s+μεταπτυχιακό|το\s+πτυχίο\s+σου"
-                r"|\bteacher\b|teaching\s+physics|in\s+your\s+(?:job|profession)|you\s+work\s+(?:at|in)\s+a\s+school"
+                r"[^.!?\n]{0,45}(?:(?:είσαι|εργάζεσαι\s+ως|δουλεύεις\s+ως|η\s+δουλειά\s+σου\s+ως)\s+(?:καθηγήτρια|καθηγητής)"
+                r"|διδασκαλία\s+(?:της\s+)?φυσικής|εργάζεσαι\s+σε\s+σχολ|έχεις\s+μεταπτυχιακό|το\s+πτυχίο\s+σου"
+                r"|as\s+a\s+teacher,\s+you|you\s+(?:are|work\s+as)\s+a\s+teacher|teaching\s+physics"
+                r"|you\s+work\s+(?:at|in)\s+a\s+school"
                 r"|you\s+have\s+a\s+master'?s|your\s+(?:university\s+)?degree)[^.!?\n]{0,70}",
             )
         )
@@ -276,8 +298,10 @@ def _unauthorized_personal_claims(personal: dict | None, text: str) -> list[tupl
         checks.append(
             (
                 "οικογενειακή κατάσταση",
-                r"[^.!?\n]{0,45}(?:με\s+(?:τα\s+)?δύο\s+(?:σου\s+)?παιδιά|έχεις\s+δύο\s+παιδιά|ως\s+μητέρα|ως\s+πατέρας|ο\s+σύζυγός\s+σου|η\s+σύζυγός\s+σου"
-                r"|with\s+(?:your\s+)?two\s+children|you\s+have\s+two\s+children|as\s+a\s+(?:mother|father)"
+                r"[^.!?\n]{0,45}(?:με\s+(?:τα\s+)?δύο\s+(?:σου\s+)?παιδιά|έχεις\s+δύο\s+παιδιά"
+                r"|(?:είσαι|ως)\s+(?:μητέρα|πατέρας)\s+(?:δύο|τριών|\d)|ο\s+σύζυγός\s+σου|η\s+σύζυγός\s+σου"
+                r"|with\s+(?:your\s+)?two\s+children|you\s+have\s+two\s+children"
+                r"|(?:you\s+are|as)\s+a\s+(?:mother|father)\s+of"
                 r"|your\s+(?:husband|wife|spouse))[^.!?\n]{0,70}",
             )
         )
@@ -285,7 +309,8 @@ def _unauthorized_personal_claims(personal: dict | None, text: str) -> list[tupl
         checks.append(
             (
                 "εργασιακές συνήθειες",
-                r"[^.!?\n]{0,45}(?:επαγγελματική\s+κόπωση|επαγγελματική\s+εξουθένωση|burnout|professional\s+exhaustion|work\s+fatigue)[^.!?\n]{0,70}",
+                r"[^.!?\n]{0,45}(?:επαγγελματική\s+σου\s+(?:κόπωση|εξουθένωση)|(?:το\s+)?burnout\s+(?:σου|που\s+(?:πέρασες|βιώνεις))"
+                r"|your\s+(?:burnout|professional\s+exhaustion|work\s+fatigue))[^.!?\n]{0,70}",
             )
         )
     if not (personal.get("Έργα/ενδιαφέροντα") or "").strip():
@@ -333,6 +358,46 @@ _SIGN_NOT_PLACEMENT = re.compile(
 )
 
 
+_SIGN_GENITIVE = {
+    "Κριός": r"Κριού",
+    "Ταύρος": r"Ταύρου",
+    "Δίδυμοι": r"Διδύμων",
+    "Καρκίνος": r"Καρκίνου",
+    "Λέων": r"Λέοντ(?:α|ος)",
+    "Παρθένος": r"Παρθένου",
+    "Ζυγός": r"Ζυγού",
+    "Σκορπιός": r"Σκορπιού",
+    "Τοξότης": r"Τοξότη",
+    "Αιγόκερως": r"Αιγόκερω",
+    "Υδροχόος": r"Υδροχόου",
+    "Ιχθύες": r"Ιχθύων",
+}
+_SIGN_NOMINATIVE = {
+    "Κριός": r"Κριός", "Ταύρος": r"Ταύρος", "Δίδυμοι": r"Δίδυμοι", "Καρκίνος": r"Καρκίνος",
+    "Λέων": r"Λέων", "Παρθένος": r"Παρθένος", "Ζυγός": r"Ζυγός", "Σκορπιός": r"Σκορπιός",
+    "Τοξότης": r"Τοξότης", "Αιγόκερως": r"Αιγόκερως", "Υδροχόος": r"Υδροχόος", "Ιχθύες": r"Ιχθύες",
+}
+_SIGN_GEN_ALT = "|".join(_SIGN_GENITIVE.values())
+_SIGN_ACC_PLAIN = "|".join(_SIGN_ACCUSATIVE.values())
+# Κάθε μορφή ζωδίου (ονομαστική, αιτιατική, γενική, αγγλικά).
+_SIGN_ANY = "|".join(
+    f"(?:{_SIGN_NOMINATIVE[k]}|{_SIGN_ACCUSATIVE[k]}|{_SIGN_GENITIVE[k]}|{EN.SIGN_NAMES[k]})"
+    for k in _SIGN_ACCUSATIVE
+)
+
+
+def _sign_from_word(word: str):
+    """Κανονικό (ελληνικό) όνομα ζωδίου από οποιαδήποτε μορφή του."""
+    for canonical in _SIGN_ACCUSATIVE:
+        forms = (
+            f"(?:{_SIGN_NOMINATIVE[canonical]}|{_SIGN_ACCUSATIVE[canonical]}"
+            f"|{_SIGN_GENITIVE[canonical]}|{EN.SIGN_NAMES[canonical]})"
+        )
+        if re.fullmatch(forms, word.strip(), re.IGNORECASE):
+            return canonical
+    return None
+
+
 _SIGN_EN_NAMES = list(EN.SIGN_NAMES)  # ελληνικά κανονικά, ίδια σειρά με τα αγγλικά
 _SIGN_EN_ALT = "|".join(f"(?P<e{i}>{en})" for i, en in enumerate(EN.SIGN_NAMES.values()))
 _SIGN_NOT_PLACEMENT_EN = re.compile(EN.SIGN_NOT_PLACEMENT, re.IGNORECASE)
@@ -366,6 +431,24 @@ def _sign_claim_errors(chart, text: str) -> list[tuple[str, str, str, str]]:
                         _claim_context(text, match.start(), match.end(), bounds),
                     )
                 )
+        # v14: «στο ζώδιο του Λέοντα», «σε Λέοντα».
+        pattern_extra = re.compile(
+            rf"{_name_pattern(point.name)}(?P<gap>[^.!?;\n]{{0,40}}?)\b(?:"
+            rf"στο\s+ζώδιο\s+τ(?:ου|ης|ων)\s+(?P<gen>{_SIGN_GEN_ALT})|σε\s+(?P<acc>{_SIGN_ACC_PLAIN}))\b",
+            re.IGNORECASE,
+        )
+        for match in pattern_extra.finditer(text):
+            gap = match.group("gap")
+            if _is_ic_mention(text, match.start()) or _SIGN_NOT_PLACEMENT.search(gap):
+                continue
+            if _claim_belongs_to_other_point(match.group(0), point.name):
+                continue
+            claimed = _sign_from_word(match.group("gen") or match.group("acc"))
+            context = _claim_context(text, match.start(), match.end(), bounds)
+            if claimed and claimed != point.sign and not any(
+                e[0] == point.name and e[3] == context for e in errors
+            ):
+                errors.append((point.name, claimed, point.sign, context))
         # Αγγλικά: «<σημείο> … in (the sign of) <ζώδιο>».
         pattern_en = re.compile(
             rf"{_name_pattern(point.name)}(?P<gap>[^.!?;\n]{{0,40}}?)\bin\s+(?:the\s+sign\s+of\s+)?"
@@ -530,3 +613,155 @@ def _named_as_ruler(body: str, name: str) -> bool:
         rf"|(?<!\w){form}(?!\w)[^.;\n]{{0,100}}?{_RULER_WORD}"
     )
     return re.search(pattern, body, re.IGNORECASE) is not None
+
+
+# ---------------------------------------------------------------------------
+# v14: δηλώσεις δεδομένων που δεν συγκρίνονταν με τον χάρτη:
+#   * μοίρες θέσης («Ο Ήλιος βρίσκεται στις 15°00′ του Υδροχόου»),
+#   * ζώδιο ακμής Οίκου («Η ακμή του Οίκου βρίσκεται στον Σκορπιό»),
+#   * ανάδρομη/ορθόδρομη κίνηση («Ο Άρης είναι ανάδρομος»).
+# Επιστρέφουν (περιγραφή διαφοράς, πλαίσιο).
+# ---------------------------------------------------------------------------
+_DEG = r"(\d{1,2})\s*°\s*(\d{1,2})\s*′"
+_POSITION_SKIP = re.compile(r"ακμ|cusp|κυβερν|rul|\borb\b|απόστασ|distance", re.IGNORECASE)
+
+
+def _position_claim_errors(chart, text: str) -> list[tuple[str, str]]:
+    errors, bounds = [], _segments_bounds(text)
+    for point in chart.points:
+        if point.kind not in ("planet", "node", "angle") or not point.sign:
+            continue
+        name = _name_pattern(point.name)
+        after = re.compile(  # «Ήλιος … 21°14′ (του) Υδροχόου»
+            rf"(?<!\w){name}(?!\w)(?P<gap>[^.!?;\n\d]{{0,45}}?){_DEG}(?:\s*\d{{1,2}}\s*″)?\s*"
+            rf"(?:(?:του|της|των|στον|στην|στους|in|of)\s+)?(?P<sign>{_SIGN_ANY})(?!\w)",
+            re.IGNORECASE,
+        )
+        before = re.compile(  # «Ήλιος: Υδροχόος 21°14′», «Ήλιος | Υδροχόος | 21°14′»
+            rf"(?<!\w){name}(?!\w)(?P<gap>[^.!?;\n\d]{{0,25}}?)(?<!\w)(?P<sign>{_SIGN_ANY})(?!\w)"
+            rf"[\s,:|]*(?:στις\s+|at\s+)?{_DEG}",
+            re.IGNORECASE,
+        )
+        for pattern in (after, before):
+            for m in pattern.finditer(text):
+                gap = m.group("gap")
+                if _POSITION_SKIP.search(gap) or _is_ic_mention(text, m.start()):
+                    continue
+                if _claim_belongs_to_other_point(m.group(0), point.name):
+                    continue
+                nums = [g for g in m.groups() if g and g.isdigit()]
+                degree, minute = int(nums[0]), int(nums[1])
+                sign = _sign_from_word(m.group("sign"))
+                actual = point.degree * 60 + point.minute
+                if sign == point.sign and abs(degree * 60 + minute - actual) <= 1:
+                    continue
+                if sign != point.sign and any(
+                    _name_pattern(p.name) and p.sign == sign
+                    and abs(degree * 60 + minute - (p.degree * 60 + p.minute)) <= 1
+                    for p in list(chart.points) + list(chart.cusps)
+                ):
+                    continue  # η θέση ανήκει σε άλλο σημείο/ακμή της ίδιας γραμμής
+                context = _claim_context(text, m.start(), m.end(), bounds)
+                item = (
+                    f"Λανθασμένη θέση — {point.name}: το κείμενο γράφει {degree}°{minute:02d}′ {sign}, "
+                    f"ενώ τα ελεγμένα δεδομένα δίνουν {point.degree}°{point.minute:02d}′ {point.sign}",
+                    context,
+                )
+                if item not in errors:
+                    errors.append(item)
+    return errors
+
+
+_CUSP_SIGN = re.compile(
+    rf"(?:(?<!\w)(?:ακμή|cusp)(?!\w)[^.!?;\n\d]{{0,40}}?"
+    rf"|(?:Οίκος|House)\s+(?:ξεκιν\w+|αρχίζ\w+|begins|starts)\s+)"
+    rf"(?:στ(?:ον|ην|ους)|in)\s+(?P<sign>{_SIGN_ANY})(?!\w)",
+    re.IGNORECASE,
+)
+
+
+def _cusp_sign_errors(chart, text: str) -> list[tuple[str, str]]:
+    errors, bounds = [], _segments_bounds(text)
+    if len(getattr(chart, "cusps", None) or []) < 12:
+        return errors
+    for n, start, end in bounds:
+        allowed = {chart.cusps[n - 1].sign, chart.cusps[n % 12].sign}
+        for m in _CUSP_SIGN.finditer(text, start, end):
+            if re.search(r"επόμεν|προηγούμεν|next|previous|απέναντι|opposite", m.group(0), re.IGNORECASE):
+                continue
+            sign = _sign_from_word(m.group("sign"))
+            if sign and sign not in allowed:
+                errors.append(
+                    (
+                        f"Λανθασμένο ζώδιο ακμής — {n}ος Οίκος: το κείμενο γράφει {sign}, "
+                        f"ενώ η ακμή του είναι στον/στην {chart.cusps[n - 1].sign}",
+                        _claim_context(text, m.start(), m.end(), bounds),
+                    )
+                )
+    return errors
+
+
+_RETRO = r"(?P<adj>ανάδρομ\w+|ορθόδρομ\w+|retrograde)"
+
+
+def _retrograde_claim_errors(chart, text: str) -> list[tuple[str, str]]:
+    """«Ο Άρης είναι ανάδρομος», «ο ανάδρομος Άρης», «Mars is retrograde»."""
+    errors, bounds = [], _segments_bounds(text)
+    any_name = "|".join(_NAME_FORMS.values())
+    for point in chart.points:
+        if point.kind != "planet":
+            continue  # Δεσμοί/γωνίες: δεν ελέγχονται
+        name = _name_pattern(point.name)
+        patterns = [
+            # επίθετο ΠΡΙΝ: «ο ανάδρομος Άρης», «η ανάδρομη κίνηση του Άρη», «retrograde Mars»
+            re.compile(
+                rf"{_RETRO}\s+(?:(?:κίνηση|πορεία|φάση|motion)\s+(?:του|της|of)\s+)?(?<!\w){name}(?!\w)",
+                re.IGNORECASE,
+            ),
+            # επίθετο ΜΕΤΑ: «Ο Άρης είναι ανάδρομος», «Ο Άρης (ανάδρομος)», «Mars is retrograde»
+            re.compile(
+                rf"(?<!\w){name}(?!\w)[\s(,]+(?:(?:είναι|κινείται|βρίσκεται|παραμένει|is|moves|was)\s+)?"
+                rf"(?:(?:σε|in)\s+)?{_RETRO}(?!\s+(?:(?:κίνηση|πορεία|φάση|motion)\s+(?:του|της|of)\s+)?(?:{any_name}))",
+                re.IGNORECASE,
+            ),
+        ]
+        for pattern in patterns:
+            for m in pattern.finditer(text):
+                if _is_ic_mention(text, m.start()):
+                    continue
+                claimed_retro = not m.group("adj").lower().startswith("ορθ")
+                if claimed_retro == bool(point.retrograde):
+                    continue
+                item = (
+                    f"Λανθασμένη κίνηση — {point.name}: το κείμενο γράφει "
+                    f"«{'ανάδρομος' if claimed_retro else 'ορθόδρομος'}», ενώ τα ελεγμένα δεδομένα δίνουν "
+                    f"«{'ανάδρομος' if point.retrograde else 'ορθόδρομος'}»",
+                    _claim_context(text, m.start(), m.end(), bounds),
+                )
+                if item not in errors:
+                    errors.append(item)
+    return errors
+
+
+def _data_claim_errors(chart, text: str) -> list[tuple[str, str]]:
+    return (
+        _position_claim_errors(chart, text)
+        + _cusp_sign_errors(chart, text)
+        + _retrograde_claim_errors(chart, text)
+    )
+
+
+def _ruler_role_errors(chart, text: str) -> list[tuple[int, str, str, str]]:
+    """Για το τελικό έντυπο: (Οίκος, δηλωμένος, αναμενόμενοι, πού). Ελέγχεται
+    μόνο ότι όποιος ονομάζεται ρητά «κύριος/σύγχρονος/παραδοσιακός κυβερνήτης»
+    μέσα σε έναν Οίκο είναι πράγματι κυβερνήτης του ζωδίου της ακμής του."""
+    wrong = []
+    if len(getattr(chart, "cusps", None) or []) < 12:
+        return wrong
+    for n, start, end in _segments_bounds(text):
+        modern, traditional = RULERS[chart.cusps[n - 1].sign]
+        allowed = [r for r in (modern, traditional) if r]
+        for name, role in _ruler_claims_in_body(text[start:end]):
+            if name not in allowed:
+                wrong.append((n, name, " / ".join(allowed), f"κείμενο ({role})"))
+    return wrong

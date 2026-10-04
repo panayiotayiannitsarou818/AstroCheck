@@ -19,7 +19,10 @@ from validation_patterns import (
     _section_heading_re,
 )
 import lexicon_en as EN
+from validation_aspects import _aspect_claim_problems
 from validation_structure import (
+    _data_claim_errors,
+    _ruler_role_errors,
     _location_claim_errors,
     _sign_claim_errors,
     _unauthorized_personal_claims,
@@ -324,6 +327,12 @@ class RewriteValidationResult:
     repeated_text: list = field(default_factory=list)  # ([Οίκοι], δείγμα) -- κλειδώνει
     warnings: list = field(default_factory=list)  # προς ανάγνωση -- ΔΕΝ κλειδώνει
     wrong_sign_claims: list = field(default_factory=list)  # (σημείο, δηλωμένο, σωστό, πλαίσιο)
+    # v14: το έντυπο του πελάτη ελέγχεται και για δηλώσεις που δεν υπάρχουν
+    # στον χάρτη -- πριν, μια επινοημένη όψη στην αναδιατύπωση περνούσε.
+    undeclared_aspects: list = field(default_factory=list)  # (Α, Β, τύπος, απόσπασμα)
+    aspect_claim_mismatches: list = field(default_factory=list)  # (όψη, διαφορά, απόσπασμα)
+    wrong_ruler_claims: list = field(default_factory=list)  # (Οίκος, δηλωμένος, αναμενόμενοι, πού)
+    wrong_data_claims: list = field(default_factory=list)  # (περιγραφή, πλαίσιο)
 
     def summary(self) -> str:
         if self.ok:
@@ -331,7 +340,7 @@ class RewriteValidationResult:
                 "✓ Ο μηχανικός έλεγχος (φίλτρο προφανών παραλείψεων) πέρασε: 12 Οίκοι με δικό τους "
                 "κείμενο και «Κεντρικό θέμα», "
                 "κάθε πλανήτης κατονομάζεται στον Οίκο του, όλες οι ενότητες της πηγής υπάρχουν με "
-                "περιεχόμενο, σωστές τοποθετήσεις και ζώδια, χωρίς τεχνικά δεδομένα (μοίρες, orb, "
+                "περιεχόμενο, σωστές τοποθετήσεις και ζώδια, καμία όψη ή κυβερνήτης που δεν υπάρχει στον χάρτη, χωρίς τεχνικά δεδομένα (μοίρες, orb, "
                 "βαρύτητες, Παράρτημα). Δεν είναι έγκριση της ερμηνείας: ΔΕΝ ελέγχεται μηχανικά αν η "
                 "ερμηνεία αποδίδει πιστά και πλήρως την ελεγμένη ανάλυση — αυτό χρειάζεται τη δική σου "
                 "ανάγνωση πριν την παράδοση."
@@ -369,6 +378,14 @@ class RewriteValidationResult:
             counts.append(f"{len(self.wrong_house_claims)} λανθασμένες τοποθετήσεις")
         if self.wrong_sign_claims:
             counts.append(f"{len(self.wrong_sign_claims)} λανθασμένες δηλώσεις ζωδίου")
+        if self.undeclared_aspects:
+            counts.append(f"{len(self.undeclared_aspects)} όψεις που δεν υπάρχουν στον ελεγμένο χάρτη")
+        if self.aspect_claim_mismatches:
+            counts.append(f"{len(self.aspect_claim_mismatches)} όψεις με λάθος τύπο")
+        if self.wrong_ruler_claims:
+            counts.append(f"{len(self.wrong_ruler_claims)} λανθασμένες δηλώσεις κυβερνήτη")
+        if self.wrong_data_claims:
+            counts.append(f"{len(self.wrong_data_claims)} λανθασμένες δηλώσεις κίνησης ή ζωδίου ακμής")
         if self.unauthorized_personal_claims:
             counts.append(
                 f"{len(self.unauthorized_personal_claims)} μη εξουσιοδοτημένες προσωπικές αναφορές"
@@ -415,6 +432,22 @@ class RewriteValidationResult:
             lines.append(
                 f"Λανθασμένη τοποθέτηση — {point_name}: δηλώνεται στον {claimed}ο αντί στον {expected}ο Οίκο. Σημείο: {snippet}"
             )
+        for a, b, t, snip in self.undeclared_aspects:
+            lines.append(
+                f"Αναφορά σε όψη που δεν υπάρχει στον χάρτη — {a}–{b} ({t}). Το πρόγραμμα διάβασε: "
+                f"«{t}» ανάμεσα σε {a} και {b}· στα ελεγμένα δεδομένα δεν υπάρχει καμία όψη για αυτό το ζεύγος. "
+                f"Σημείο: «{snip}»"
+            )
+        for a, diff, snip in self.aspect_claim_mismatches:
+            lines.append(
+                f"Λάθος δήλωση όψης — {a.first}–{a.second}: {diff} (ελεγμένα: {a.aspect}). Σημείο: «{snip}»"
+            )
+        for house_n, claimed, expected, where in self.wrong_ruler_claims:
+            lines.append(
+                f"{house_n}ος Οίκος: το {where} δηλώνει κυβερνήτη {claimed}, ενώ από το ζώδιο της ακμής είναι {expected}."
+            )
+        for description, context in self.wrong_data_claims:
+            lines.append(f"{description}. Σημείο: {context}")
         for category, snippet in self.unauthorized_personal_claims:
             lines.append(f"Μη δηλωμένο προσωπικό στοιχείο ({category}): «{snippet}»")
         shown = self.technical_data[:40]
@@ -470,6 +503,9 @@ def validate_rewrite(
     unauthorized = _unauthorized_personal_claims(personal, rewrite_text)
     technical = _client_technical_data(rewrite_text)
     wrong_signs = _sign_claim_errors(chart, rewrite_text)
+    undeclared_aspects, aspect_mismatches = _aspect_claim_problems(chart, rewrite_text)
+    wrong_rulers = _ruler_role_errors(chart, rewrite_text)
+    wrong_data = _data_claim_errors(chart, rewrite_text)
     thin, no_theme, unnamed, empty_sections, repeated, repeated_warnings = _content_problems(
         chart, source_text, rewrite_text
     )
@@ -494,6 +530,10 @@ def validate_rewrite(
         or unauthorized
         or technical
         or wrong_signs
+        or undeclared_aspects
+        or aspect_mismatches
+        or wrong_rulers
+        or wrong_data
     )
     return RewriteValidationResult(
         ok,
@@ -510,4 +550,8 @@ def validate_rewrite(
         empty_sections=empty_sections,
         repeated_text=repeated,
         warnings=warnings,
+        undeclared_aspects=undeclared_aspects,
+        aspect_claim_mismatches=aspect_mismatches,
+        wrong_ruler_claims=wrong_rulers,
+        wrong_data_claims=wrong_data,
     )

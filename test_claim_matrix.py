@@ -155,7 +155,7 @@ def test_position_degree_is_not_read_as_orb(chart, known):
     art1 = "Η" if known.first in FEMININE else "Ο"
     art2 = "τη" if known.second in FEMININE else "τον"
     t = ACC_TYPE.get(known.aspect, known.aspect.lower())
-    line = f"{art1} {known.first} σχηματίζει {t} με {art2} {ACC[known.second]}, με τον Ήλιο στις 12°30′ του Λέοντα."
+    line = f"{art1} {known.first} σχηματίζει {t} με {art2} {ACC[known.second]}, με τον Ήλιο στις 21°55′ του Υδροχόου."
     assert V.validate_analysis(chart, _add(build_analysis(chart, "el"), line)).ok
 
 

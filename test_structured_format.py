@@ -302,17 +302,19 @@ def test_ambiguous_or_incomplete_aspect_rows_fail(chart, good, row):
 @pytest.mark.parametrize(
     "row",
     [
-        "Ήλιος | Λέων | 12°30′ | 5ος Οίκος",
-        "Ωροσκόπος | Καρκίνος | 5°12′",
-        "Ήλιος | 12°30′ Λέοντα",
+        "Ήλιος | Υδροχόος | 21°55′ | 3ος Οίκος",
+        "Ωροσκόπος | Τοξότης | 5°38′",
+        "Ήλιος | 21°55′ Υδροχόου",
         "1ος Οίκος | Τοξότης | 3°12′",
         "Πλανήτης | Ζώδιο | Μοίρες | Οίκος",
         "Ζεύγος | Όψη | Orb | Κατηγορία",
-        "Sun | Leo | 12°30′ | 5th House",
+        "Sun | Aquarius | 21°55′ | 3rd House",
     ],
 )
 def test_data_and_header_tables_are_accepted(chart, good, row):
-    """Ο πίνακας βασικών δεδομένων (Odigies §12) δεν είναι γραμμή όψης."""
+    """Ο πίνακας βασικών δεδομένων (Odigies §12) δεν είναι γραμμή όψης.
+    v14: οι θέσεις συγκρίνονται πλέον με τον χάρτη, άρα οι γραμμές
+    χρησιμοποιούν τις πραγματικές θέσεις του astro_paradeigma_2."""
     result = V.validate_analysis(chart, _add(good, row))
     assert result.ok, (row, result.details_lines()[:2])
 

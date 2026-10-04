@@ -106,7 +106,13 @@ def generate_validated(
             text = complete(api_key, prompt, model)
             kind = "δημιουργία"
         else:
-            text = complete(api_key, revision_prompt(prompt, text, result.details_lines()), model)
+            # v14: η διόρθωση ξεκινά από την ΚΑΛΥΤΕΡΗ ως τώρα απόπειρα, όχι από
+            # την τελευταία -- αν ένας γύρος χειροτέρεψε το κείμενο, δεν
+            # χτίζουμε πάνω του.
+            _, base_text, base_result = best
+            text = complete(
+                api_key, revision_prompt(prompt, base_text, base_result.details_lines()), model
+            )
             kind = "διόρθωση"
         result = validate(text)
         errors = len(result.details_lines())

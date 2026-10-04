@@ -468,7 +468,7 @@ _RELATIVE = re.compile(
 
 def _generic_gap_aspect(gap: str):
     # «Ο Άρης, που σχηματίζει τετράγωνο με τον Κρόνο» -- αναφορική πρόταση
-    gap = _RELATIVE.sub(" ", gap, count=1)
+    gap = re.sub(r"[ \t]+", " ", _RELATIVE.sub(" ", gap, count=1))
     if len(gap) > 90 or _GAP_BREAK.search(gap):
         return None
     m = _GAP_TAIL.search(gap)
@@ -562,7 +562,8 @@ _COORD_START = re.compile(
 # Το σκέτο κόμμα επιτρέπεται μόνο ως απαρίθμηση («…, τον Ήλιο»)· το «, με τον
 # Ήλιο …» είναι αμφίσημο (μπορεί να είναι συνοδευτική φράση) -> καμία δήλωση.
 _OBJECT_COORD = re.compile(
-    r"^\s*(?:(?:,\s*)?(?:καθώς\s+και|όπως\s+και|και|as\s+well\s+as|and)\s+(?:(?:με|with)\s+)?"
+    r"^\s*(?:(?:,\s*)?(?:καθώς\s+και|όπως\s+και|όσο\s+και|αλλά\s+και|και|as\s+well\s+as|but\s+also|and)"
+    r"(?:\s*,?\s*(?:επίσης|επιπλέον|ακόμη|ακόμα|also)\s*,?)?\s+(?:(?:με|with)\s+)?"
     r"|,\s+)(?:(?:τον|την|τη|το|τους|the)\s+)?$",
     re.IGNORECASE,
 )
@@ -577,13 +578,79 @@ _CLAUSE_TAIL_END = re.compile(
 )
 
 
-def _prose_claims(text: str):
+# v14: επεξηγηματικές (παρενθετικές) φράσεις μετά από σημείο.
+#   «Η Σελήνη, κυβερνήτης του 8ου Οίκου, σχηματίζει τετράγωνο με τον Κρόνο»
+#   «Ο Κρόνος, σε σύνοδο με τον Άρη, σχηματίζει εξάγωνο με τον Ποσειδώνα»
+#   «… με τον Ερμή (πλανήτη της σκέψης) και με τον Κρόνο»
+# Η φράση ανάμεσα στα δύο κόμματα (ή στην παρένθεση) διαβάζεται ΧΩΡΙΣΤΑ, με
+# υποκείμενο το σημείο που επεξηγεί· η κύρια πρόταση διαβάζεται χωρίς αυτήν,
+# ώστε το υποκείμενό της να μη «χάνεται» ούτε να αντικαθίσταται από σημείο
+# της επεξήγησης. Η αντικατάσταση γίνεται με κενά ίδιου μήκους, άρα οι θέσεις
+# χαρακτήρων (και τα αποσπάσματα των μηνυμάτων) μένουν ίδιες με το αρχικό.
+_PAREN_COMMA = re.compile(
+    rf"(?<!\w)(?P<name>{_ANY_NAME_ALT})(?!\w)(?P<body>\s*,(?P<c>[^,.;:·\u0387!?()\n|]{{3,110}}),)",
+    re.IGNORECASE,
+)
+_PAREN_ROUND = re.compile(
+    rf"(?<!\w)(?P<name>{_ANY_NAME_ALT})(?!\w)(?P<body>\s*\((?P<c>[^()\n|]{{2,110}})\))",
+    re.IGNORECASE,
+)
+_ONLY_A_NAME = re.compile(
+    rf"^\s*(?:(?:και|and)\s+)?(?:(?:ο|η|τον|την|τη|το|του|της|the)\s+)?(?:{_ANY_NAME_ALT})\s*$",
+    re.IGNORECASE,
+)
+_COMMA_ADVERB = re.compile(
+    r",\s*(?:επίσης|επιπλέον|παράλληλα|ταυτόχρονα|ωστόσο|μάλιστα|also|moreover|in\s+addition)\s*,",
+    re.IGNORECASE,
+)
+
+
+def _blank(text: str, start: int, end: int) -> str:
+    return text[:start] + " " * (end - start) + text[end:]
+
+
+def _split_parentheticals(text: str) -> tuple[str, list[str]]:
+    """(κείμενο χωρίς επεξηγηματικές φράσεις, [«Σημείο φράση», …])."""
+    for m in list(_COMMA_ADVERB.finditer(text)):
+        text = _blank(text, m.start(), m.end())
+    extras = []
+    for pattern in (_PAREN_ROUND, _PAREN_COMMA):
+        pos = 0
+        while True:
+            m = pattern.search(text, pos)
+            if not m:
+                break
+            content = m.group("c")
+            pos = m.end("name")
+            if _ONLY_A_NAME.match(content):
+                continue  # απαρίθμηση («τον Άρη, τον Κρόνο, και …»), όχι επεξήγηση
+            if pattern is _PAREN_ROUND and (
+                re.search(r"°|\borb\b", content, re.IGNORECASE) or _weights_in(content)
+            ):
+                continue  # τεχνική παρένθεση «(orb 1°13′, Στενή/ισχυρή)»
+            if pattern is _PAREN_COMMA and re.match(
+                r"\s*(?:και|ενώ|αλλά|όμως|and|while|but)\s", content, re.IGNORECASE
+            ):
+                continue  # νέα πρόταση, όχι επεξήγηση
+            extras.append(f"{m.group('name')} {content.strip()}")
+            text = _blank(text, m.start("body"), m.end("body"))
+    return text, extras
+
+
+def _prose_claims(text: str, _split: bool = True):
+    original = text
+    if _split:
+        text, extras = _split_parentheticals(text)
+        for extra in extras:
+            for claim in _prose_claims(extra, _split=False):
+                yield claim[:5] + (extra[:200],)
     names = _name_matches(text)
     prev_end = 0
     # v12: η τελευταία ΔΗΛΩΣΗ της πρότασης (υποκείμενο, αντικείμενο, τύπος,
     # όριο πρότασης). Ενημερώνεται σε κάθε δήλωση με ρητό υποκείμενο, ώστε
     # ένα νέο υποκείμενο («…, η Αφροδίτη σχηματίζει…») να αντικαθιστά το προηγούμενο.
     last = None
+    gap_claim_end = None  # τέλος αντικειμένου δήλωσης που ο τύπος της ήταν ΣΤΟ κενό
     for i, ((s1, e1, n1), (s2, e2, n2)) in enumerate(zip(names, names[1:])):
         gap = text[e1:s2]
         left, right = _sentence_bounds(text, s1, e2)
@@ -597,11 +664,15 @@ def _prose_claims(text: str):
         next_start = names[i + 2][0] if i + 2 < len(names) else len(text)
         tail_end = min(right, next_start)
         aspect, claim_end = None, e2
+        via_gap = False
         if re.match(rf"^{_DASH}$", gap):  # Α
             m = re.match(rf"^\s*[:—–-]?\s*\(?\s*({_ANY_ASPECT})", text[e2:tail_end], re.IGNORECASE)
             if m:
                 aspect, claim_end = _aspect_type(m.group(1)), e2 + m.end()
-        if aspect is None and _GAP_AB.match(gap):  # Β
+        # Β. v14: όχι όταν ο τύπος του προθέματος ανήκει ήδη στην προηγούμενη
+        # δήλωση («Mercury squares Jupiter and Pluto»: το «squares» είναι το
+        # ρήμα του Ερμή, όχι «τετράγωνο Δία–Πλούτωνα»).
+        if aspect is None and _GAP_AB.match(gap) and gap_claim_end != e1:
             m = _PREFIX_B.search(prefix)
             if m:
                 aspect = _aspect_type(m.group(1))
@@ -610,7 +681,7 @@ def _prose_claims(text: str):
         if aspect is None and _COORD_START.match(gap):  # ελλειπτικό υποκείμενο
             elliptic = _generic_gap_aspect(_COORD_START.sub(" ", gap, count=1))
             if elliptic and same_claim_sentence:
-                n1, aspect, explicit_subject = last[0], elliptic, False
+                n1, aspect, explicit_subject, via_gap = last[0], elliptic, False, True
             elif elliptic:
                 continue  # αμφίσημο υποκείμενο: καμία δήλωση
         # v12: πολλά αντικείμενα με κοινό τύπο: «τρίγωνο με τον Ερμή και τον Ήλιο».
@@ -624,10 +695,18 @@ def _prose_claims(text: str):
             and _OBJECT_COORD.match(gap)
             and (_GREEK_OBJECT.search(gap) or _CLAUSE_TAIL_END.match(text[e2:right]))
         ):
-            n1, aspect, explicit_subject = last[0], last[2], False
+            n1, aspect, explicit_subject, via_gap = last[0], last[2], False, True
         if aspect is None:  # Γ (v9: γενικό -- όχι λίστα ρημάτων/επιθέτων)
             aspect = _generic_gap_aspect(gap)
+            via_gap = aspect is not None
         if aspect is None:
+            continue
+        # v14: «… μαζί με το εξάγωνο Ποσειδώνα–Πλούτωνα» -- το δεύτερο σημείο
+        # ανοίγει δικό του ζεύγος με παύλα· δεν είναι «Ποσειδώνας–Ποσειδώνας».
+        # (Η ρητή αυτο-όψη «Ο Ήλιος σχηματίζει τετράγωνο με τον Ήλιο» μένει σφάλμα.)
+        if n1 == n2 and (
+            not _split or re.match(rf"{_DASH}(?:{_ANY_NAME_ALT})", text[e2:], re.IGNORECASE)
+        ):
             continue
         clause_start = left + max(
             (m.end() for m in _CLAUSE_BOUNDARY.finditer(text[left:s1])), default=0
@@ -641,8 +720,9 @@ def _prose_claims(text: str):
         if _EXISTENCE_NEGATION.search(after[:clause_end]):
             continue
         last = (n1 if explicit_subject else last[0], n2, aspect, left)
+        gap_claim_end = e2 if via_gap else None
         orbs, weights = _claim_details(text[claim_end:tail_end])
-        yield n1, n2, aspect, tuple(orbs), tuple(weights), text[left:right].strip()[:200]
+        yield n1, n2, aspect, tuple(orbs), tuple(weights), " ".join(original[left:right].split())[:200]
 
 
 def _aspect_claims(text: str):

@@ -78,11 +78,11 @@ ASPECT_NAMES = {
 }
 
 ASPECT_REGEX = {
-    "Σύνοδος": r"\bconjunctions?\b",
+    "Σύνοδος": r"\bconjunct(?:ions?|s)?\b",
     "Εξάγωνο": r"\bsextiles?\b",
     "Τετράγωνο": r"\bsquares?\b",
     "Τρίγωνο": r"\btrines?\b",
-    "Αντίθεση": r"\boppositions?\b",
+    "Αντίθεση": r"\boppos(?:itions?|es|ed|ing)\b",
     "Χιαστί όψη 150°": r"\b(?:quincunx(?:es)?|inconjuncts?)\b(?:\s+150°)?",
 }
 

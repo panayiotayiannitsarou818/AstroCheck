@@ -29,6 +29,7 @@ from validation_aspects import (
 )
 from validation_structure import (
     _box_ruler_text,
+    _data_claim_errors,
     _house_segments,
     _involved_points,
     _location_claim_errors,
@@ -66,6 +67,8 @@ class ValidationResult:
     stray_technical_values: list = field(default_factory=list)  # (τιμή, απόσπασμα)
     # v10: γραμμή πίνακα που μοιάζει με γραμμή όψης αλλά δεν διαβάζεται πλήρως
     malformed_aspect_rows: list = field(default_factory=list)  # (λόγος, γραμμή)
+    # v14: λάθος μοίρες θέσης, ζώδιο ακμής, ανάδρομη/ορθόδρομη κίνηση
+    wrong_data_claims: list = field(default_factory=list)  # (περιγραφή, πλαίσιο)
 
     def summary(self) -> str:
         if self.ok:
@@ -120,6 +123,10 @@ class ValidationResult:
         if self.missing_ruler_box:
             parts.append(
                 f"{len(self.missing_ruler_box)} Οίκοι χωρίς γραμμή «Κυβερνήτης:» στο πλαίσιο σύνοψης"
+            )
+        if self.wrong_data_claims:
+            parts.append(
+                f"{len(self.wrong_data_claims)} δηλώσεις θέσης, ζωδίου ακμής ή κίνησης διαφέρουν από τα ελεγμένα δεδομένα"
             )
         if self.malformed_aspect_rows:
             parts.append(f"{len(self.malformed_aspect_rows)} γραμμές όψεων δεν διαβάζονται πλήρως")
@@ -189,6 +196,8 @@ class ValidationResult:
             lines.append(
                 f"Οίκος {house_n}: λείπει (ή δεν ονομάζει πλανήτη) η γραμμή «Κυβερνήτης:» του πλαισίου σύνοψης."
             )
+        for description, context in self.wrong_data_claims:
+            lines.append(f"{description}. Σημείο: {context}")
         for reason, row in self.malformed_aspect_rows:
             lines.append(
                 f"Μη αναγνώσιμη γραμμή όψης — {reason}. Κάθε γραμμή όψης: «Α–Β | Τύπος | orb X°YY′ | Κατηγορία». Γραμμή: «{row}»"
@@ -203,7 +212,9 @@ class ValidationResult:
             )
         for a, b, t, snip in self.undeclared_aspects:
             lines.append(
-                f"Αναφορά σε όψη που δεν υπάρχει στον χάρτη — {a}–{b} ({t}). Σημείο: «{snip}»"
+                f"Αναφορά σε όψη που δεν υπάρχει στον χάρτη — {a}–{b} ({t}). Το πρόγραμμα διάβασε: "
+                f"«{t}» ανάμεσα σε {a} και {b}· στα ελεγμένα δεδομένα δεν υπάρχει καμία όψη για αυτό το ζεύγος. "
+                f"Σημείο: «{snip}»"
             )
         return lines
 
@@ -283,6 +294,7 @@ def validate_analysis(chart, analysis_text: str, personal: dict | None = None) -
     stray_technical_values = _stray_technical_values(text)
     malformed_aspect_rows = _malformed_aspect_rows(text)
     unauthorized_personal_claims = _unauthorized_personal_claims(personal, text)
+    wrong_data_claims = _data_claim_errors(chart, text)
 
     # Έλεγχος συνέπειας ΟΛΩΝ των αναφερόμενων όψεων, όχι μόνο των
     # υποχρεωτικών τετραγώνων/αντιθέσεων. Έτσι εντοπίζεται, για παράδειγμα,
@@ -316,6 +328,7 @@ def validate_analysis(chart, analysis_text: str, personal: dict | None = None) -
         or aspect_claim_mismatches
         or stray_technical_values
         or malformed_aspect_rows
+        or wrong_data_claims
     )
     return ValidationResult(
         ok,
@@ -337,4 +350,5 @@ def validate_analysis(chart, analysis_text: str, personal: dict | None = None) -
         aspect_claim_mismatches=aspect_claim_mismatches,
         stray_technical_values=stray_technical_values,
         malformed_aspect_rows=malformed_aspect_rows,
+        wrong_data_claims=wrong_data_claims,
     )
