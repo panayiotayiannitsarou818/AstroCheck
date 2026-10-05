@@ -212,13 +212,22 @@ def _location_claim_errors(chart, text: str) -> list[tuple[str, int, int, str]]:
         # v14: χωρίς ρήμα -- «Με τον Ήλιο στον 7ο Οίκο …», «Ο Άρης του 7ου Οίκου».
         # Μόνο όταν ο Οίκος ακολουθεί ΑΜΕΣΩΣ το όνομα.
         bare = re.compile(
-            rf"(?<!\w){name}(?:\s+σου)?\s+(?:στον|του)\s+(\d{{1,2}})\s*(?:ος|ου|ο)?\s+Οίκ",
+            rf"(?<!\w){name}(?:\s+σου)?"
+            rf"(?:,?\s+(?:που\s+βρίσκεται\s+)?στ(?:ον|ην|ους)\s+(?:{_SIGN_ACC_PLAIN})\s*(?:,\s*και|,|\s+και)?)?"
+            rf"\s+(?P<prep>στον|του)\s+(\d{{1,2}})\s*(?:ος|ου|ο)?\s+Οίκ",
             re.IGNORECASE,
         )
-        bare_matches = [
+        # «Mars, in Libra and in the 8th House» (πραγματικό αγγλικό έντυπο).
+        bare_en = re.compile(
+            rf"(?<!\w){name},?\s+(?:(?:which|who)\s+is\s+)?in\s+(?:{'|'.join(_SIGN_EN_NAMES_ALT)})"
+            rf"\s*(?:,\s*and|,|\s+and)?\s+(?P<prep>in)\s+the\s+(\d{{1,2}})(?:st|nd|rd|th)\s+House",
+            re.IGNORECASE,
+        )
+        bare_matches = list(bare_en.finditer(text)) + [
             m
             for m in bare.finditer(text)
-            if not re.search(r"κυβερν\w*[^.!?\n]{0,30}$", text[max(0, m.start() - 45) : m.start()], re.IGNORECASE)
+            if m.group("prep").lower() == "στον"
+            or not re.search(r"κυβερν\w*[^.!?\n]{0,30}$", text[max(0, m.start() - 45) : m.start()], re.IGNORECASE)
         ]
         numeric_matches = (
             list(numeric.finditer(text)) + list(numeric_en.finditer(text)) + bare_matches
@@ -229,7 +238,7 @@ def _location_claim_errors(chart, text: str) -> list[tuple[str, int, int, str]]:
                 continue
             if _is_ic_mention(text, match.start()):
                 continue
-            claimed = int(next(g for g in match.groups() if g))
+            claimed = int(next(g for g in match.groups() if g and g.isdigit()))
             if 1 <= claimed <= 12 and claimed != point.house:
                 context = _claim_context(text, match.start(), match.end(), bounds)
                 if any(e[0] == point.name and e[1] == claimed and e[3] == context for e in errors):
@@ -398,6 +407,7 @@ def _sign_from_word(word: str):
     return None
 
 
+_SIGN_EN_NAMES_ALT = list(EN.SIGN_NAMES.values())
 _SIGN_EN_NAMES = list(EN.SIGN_NAMES)  # ελληνικά κανονικά, ίδια σειρά με τα αγγλικά
 _SIGN_EN_ALT = "|".join(f"(?P<e{i}>{en})" for i, en in enumerate(EN.SIGN_NAMES.values()))
 _SIGN_NOT_PLACEMENT_EN = re.compile(EN.SIGN_NOT_PLACEMENT, re.IGNORECASE)
@@ -639,7 +649,7 @@ def _position_claim_errors(chart, text: str) -> list[tuple[str, str]]:
         )
         before = re.compile(  # «Ήλιος: Υδροχόος 21°14′», «Ήλιος | Υδροχόος | 21°14′»
             rf"(?<!\w){name}(?!\w)(?P<gap>[^.!?;\n\d]{{0,25}}?)(?<!\w)(?P<sign>{_SIGN_ANY})(?!\w)"
-            rf"[\s,:|]*(?:στις\s+|at\s+)?{_DEG}",
+            rf"[ \t,:|]*(?:στις[ \t]+|at[ \t]+)?{_DEG}",
             re.IGNORECASE,
         )
         for pattern in (after, before):
@@ -715,13 +725,13 @@ def _retrograde_claim_errors(chart, text: str) -> list[tuple[str, str]]:
         patterns = [
             # επίθετο ΠΡΙΝ: «ο ανάδρομος Άρης», «η ανάδρομη κίνηση του Άρη», «retrograde Mars»
             re.compile(
-                rf"{_RETRO}\s+(?:(?:κίνηση|πορεία|φάση|motion)\s+(?:του|της|of)\s+)?(?<!\w){name}(?!\w)",
+                rf"{_RETRO}[ \t]+(?:(?:κίνηση|πορεία|φάση|motion)[ \t]+(?:του|της|of)[ \t]+)?(?<!\w){name}(?!\w)",
                 re.IGNORECASE,
             ),
             # επίθετο ΜΕΤΑ: «Ο Άρης είναι ανάδρομος», «Ο Άρης (ανάδρομος)», «Mars is retrograde»
             re.compile(
-                rf"(?<!\w){name}(?!\w)[\s(,]+(?:(?:είναι|κινείται|βρίσκεται|παραμένει|is|moves|was)\s+)?"
-                rf"(?:(?:σε|in)\s+)?{_RETRO}(?!\s+(?:(?:κίνηση|πορεία|φάση|motion)\s+(?:του|της|of)\s+)?(?:{any_name}))",
+                rf"(?<!\w){name}(?!\w)[ \t(,]+(?:(?:είναι|κινείται|βρίσκεται|παραμένει|is|moves|was)[ \t]+)?"
+                rf"(?:(?:σε|in)[ \t]+)?{_RETRO}(?![ \t]+(?:(?:κίνηση|πορεία|φάση|motion)[ \t]+(?:του|της|of)[ \t]+)?(?:{any_name}))",
                 re.IGNORECASE,
             ),
         ]

@@ -5,14 +5,29 @@ import pandas as pd
 from pathlib import Path
 from prompts import build_master_prompt
 from docx_builder import build_audit_docx, build_analysis_docx
-from generator import DEFAULT_MAX_ROUNDS, DEFAULT_MODEL, generate_validated
+from generator import (
+    DEFAULT_MAX_ROUNDS,
+    DEFAULT_MODELS,
+    PROVIDER_SETTINGS,
+    PROVIDERS,
+    REWRITE_REVISION_TEMPLATE,
+    build_rewrite_prompt,
+    completer,
+    generate_validated,
+)
 from reference_loader import (
     docx_text,
     load_default_references,
 )
 from validator import validate_analysis, validate_rewrite
 from case_state import fingerprint, forget_stale_results, handle_pdf_upload, reset_case_state
-from ui_texts import FULL_ANALYSIS_PASTE_MESSAGE, REWRITE_PASTE_MESSAGE, REWRITE_ENGLISH_ADDENDUM
+from ui_texts import (
+    APP_VERSION,
+    analysis_paste_message,
+    language_notes,
+    rewrite_language_block,
+    rewrite_paste_message,
+)
 
 st.set_page_config(page_title="AstroCheck Pro", page_icon="✦", layout="wide")
 # Στυλ της εφαρμογής. Γράφεται ένας κανόνας ανά γραμμή για να διαβάζεται,
@@ -215,6 +230,35 @@ def _secret(name: str) -> str:
         return ""
 
 
+def _api_choice(scope: str):
+    """Επιλογή μοντέλου (Claude ή OpenAI) και κλειδί API. Επιστρέφει
+    (πάροχος, κλειδί, μοντέλο). Κάθε στάδιο (ανάλυση, αναδιατύπωση) έχει δική του επιλογή."""
+    choice = st.radio(
+        "Μοντέλο που γράφει",
+        PROVIDERS,
+        horizontal=True,
+        key=f"provider_{scope}",
+    )
+    key_name, model_name, placeholder = PROVIDER_SETTINGS[choice]
+    model = _secret(model_name) or DEFAULT_MODELS[choice]
+    saved_key = _secret(key_name)
+    if saved_key:
+        st.caption(f"🔑 Χρησιμοποιείται το κλειδί {choice} από τις ρυθμίσεις της εφαρμογής. Μοντέλο: {model}.")
+        return choice, saved_key, model
+    st.caption(
+        f"Χρειάζεται δικό σου {choice} API key. Δεν αποθηκεύεται πουθενά. "
+        f"(Μπορείς να το ορίσεις μόνιμα στα Secrets της εφαρμογής ως {key_name}.) Μοντέλο: {model}."
+    )
+    api = st.text_input(
+        f"{choice} API key",
+        type="password",
+        label_visibility="collapsed",
+        placeholder=placeholder,
+        key=f"api_key_{choice}_{scope}",
+    )
+    return choice, api, model
+
+
 def _request_main_tab(label: str) -> None:
     st.session_state._requested_main_tab = label
 
@@ -263,6 +307,7 @@ with st.sidebar:
 
     st.divider()
     st.caption("Τα δεδομένα επεξεργάζονται στη συνεδρία και δεν αποθηκεύονται από την εφαρμογή.")
+    st.caption(f"Έκδοση AstroCheck: {APP_VERSION}")
     if st.button(
         "🔄 Νέα ανάλυση (καθαρισμός όλων)",
         width="stretch",
@@ -354,7 +399,12 @@ with tab4:
     # εμφανίζονται πάντα -- πριν δεν φαίνονταν πουθενά.
     for _w in getattr(st.session_state.chart, "warnings", None) or []:
         st.warning("⚠️ " + _w)
-    language = st.selectbox("Γλώσσα τελικής ανάλυσης", ["Ελληνικά", "Αγγλικά"], key="language")
+    language = st.selectbox(
+        "Γλώσσα τελικού εντύπου πελάτη",
+        ["Ελληνικά", "Αγγλικά"],
+        key="language",
+        help="Ορίζει τη γλώσσα του τελικού εντύπου. Η τεχνική ανάλυση γίνεται δεκτή και στις δύο γλώσσες.",
+    )
     personal = {"Όνομα": chart.name if chart else ""}
     prompt = ""
     if chart:
@@ -397,24 +447,7 @@ with tab4:
         with col_auto:
             with st.container(border=True):
                 st.markdown("#### 🤖 Αυτόματη δημιουργία")
-                saved_key = _secret("OPENAI_API_KEY")
-                model = _secret("OPENAI_MODEL") or DEFAULT_MODEL
-                if saved_key:
-                    st.caption(
-                        "🔑 Χρησιμοποιείται το κλειδί OpenAI από τις ρυθμίσεις της εφαρμογής."
-                    )
-                    api = saved_key
-                else:
-                    st.caption(
-                        "Χρειάζεται δικό σου OpenAI API key. Δεν αποθηκεύεται πουθενά. "
-                        "(Μπορείς να το ορίσεις μόνιμα στα Secrets της εφαρμογής ως OPENAI_API_KEY.)"
-                    )
-                    api = st.text_input(
-                        "OpenAI API key",
-                        type="password",
-                        label_visibility="collapsed",
-                        placeholder="sk-...",
-                    )
+                provider, api, model = _api_choice("analysis")
                 st.caption(
                     f"Η ανάλυση ελέγχεται αυτόματα και, αν χρειαστεί, διορθώνεται αυτόματα "
                     f"(έως {DEFAULT_MAX_ROUNDS} γύροι συνολικά)."
@@ -453,6 +486,7 @@ with tab4:
                                 model=model,
                                 max_rounds=DEFAULT_MAX_ROUNDS,
                                 on_round=_on_round,
+                                complete=completer(provider),
                             )
                             st.session_state.analysis = outcome.text
                             st.session_state.analysis_docx_bytes = None
@@ -471,7 +505,7 @@ with tab4:
                         except Exception as e:
                             status.update(label="Η δημιουργία απέτυχε.", state="error")
                             st.error(
-                                "Η δημιουργία απέτυχε. Έλεγξε το κλειδί OpenAI και δοκίμασε ξανά."
+                                f"Η δημιουργία απέτυχε. Έλεγξε το κλειδί {provider} και δοκίμασε ξανά."
                             )
                             with st.expander("Τεχνική λεπτομέρεια"):
                                 st.code(str(e))
@@ -491,7 +525,9 @@ with tab4:
                     width="stretch",
                 )
                 with st.expander("Έτοιμο μήνυμα για επικόλληση στο ChatGPT/Claude"):
-                    st.code(FULL_ANALYSIS_PASTE_MESSAGE, language=None)
+                    if language == "Αγγλικά":
+                        st.info("Επιλεγμένη γλώσσα: Αγγλικά. Η πρώτη γραμμή του μηνύματος ζητά αγγλική ανάλυση.")
+                    st.code(analysis_paste_message(language), language=None)
                 st.markdown("**2. Ανέβασε την ανάλυση σε Word και έλεγξέ την**")
                 uploaded_analysis = st.file_uploader(
                     "Τελική ανάλυση από ChatGPT/Claude (.docx)",
@@ -542,23 +578,26 @@ with tab6:
         "Η αναδιατύπωση αλλάζει μόνο το ύφος. Οι Οίκοι, τα δεδομένα και οι ενότητες μένουν ίδια."
     )
     rewrite_command_path = (
-        Path(__file__).resolve().parent / "Desmeftiki_Entoli_Telikis_Anadiatyposis_v8.docx"
+        Path(__file__).resolve().parent / "Desmeftiki_Entoli_Telikis_Anadiatyposis_v9.docx"
     )
     if rewrite_command_path.exists():
         st.download_button(
             "⬇️ Λήψη Δεσμευτικής Εντολής Τελικής Αναδιατύπωσης",
             rewrite_command_path.read_bytes(),
-            file_name="Desmeftiki_Entoli_Telikis_Anadiatyposis_v8.docx",
+            file_name="Desmeftiki_Entoli_Telikis_Anadiatyposis_v9.docx",
             width="stretch",
         )
     else:
         st.warning("Λείπει η ενσωματωμένη Δεσμευτική Εντολή Τελικής Αναδιατύπωσης.")
     with st.expander("Έτοιμο μήνυμα για επικόλληση στο ChatGPT/Claude", expanded=True):
         _client_name = chart.name if chart and chart.name else "[ΟΝΟΜΑ]"
-        _rewrite_message = REWRITE_PASTE_MESSAGE.format(name=_client_name)
-        if st.session_state.get("language") == "Αγγλικά":
-            _rewrite_message += REWRITE_ENGLISH_ADDENDUM
+        # v14: το μήνυμα χτίζεται από τη γλώσσα που έχει πράγματι η ελεγμένη ανάλυση.
+        _rewrite_message = rewrite_paste_message(
+            _client_name, st.session_state.get("language"), st.session_state.analysis or ""
+        )
         st.code(_rewrite_message, language=None)
+    for _note in language_notes(st.session_state.get("language"), st.session_state.analysis or ""):
+        st.info(_note)
     if not (
         chart
         and st.session_state.analysis
@@ -569,6 +608,67 @@ with tab6:
             "Πρώτα χρειάζεται ελεγμένη τεχνική ανάλυση από την καρτέλα «2 · Ανάλυση & έλεγχος»."
         )
     else:
+        with st.container(border=True):
+            st.markdown("#### 🤖 Αυτόματη αναδιατύπωση")
+            rw_provider, rw_api, rw_model = _api_choice("rewrite")
+            st.caption(
+                "Στέλνεται η Δεσμευτική Εντολή μαζί με την ελεγμένη ανάλυση. Το τελικό έντυπο ελέγχεται "
+                f"αυτόματα και, αν χρειαστεί, διορθώνεται (έως {DEFAULT_MAX_ROUNDS} γύροι συνολικά). "
+                "Ο έλεγχος δεν κρίνει αν διατηρήθηκε όλο το νόημα· διάβασε το έντυπο πριν το παραδώσεις."
+            )
+            if st.button(
+                "Δημιουργία τελικού εντύπου",
+                type="primary",
+                disabled=not rw_api or not rewrite_command_path.exists(),
+                width="stretch",
+            ):
+                with st.status("Γράφεται το τελικό έντυπο…", expanded=True) as rw_status:
+
+                    def _on_rewrite_round(r):
+                        rw_status.write(
+                            f"{'✓' if r.ok else '✗'} Γύρος {r.number} ({r.kind}): "
+                            + ("πέρασε τον έλεγχο." if r.ok else f"{r.error_count} σφάλματα.")
+                        )
+
+                    try:
+                        _name = chart.name if chart and chart.name else "[ΟΝΟΜΑ]"
+                        _analysis_text = st.session_state.analysis
+                        rw_prompt = build_rewrite_prompt(
+                            docx_text(rewrite_command_path.read_bytes()),
+                            _analysis_text,
+                            _name,
+                            rewrite_language_block(_name, st.session_state.get("language"), _analysis_text),
+                        )
+                        rw_outcome = generate_validated(
+                            rw_api,
+                            rw_prompt,
+                            validate=lambda t: validate_rewrite(chart, _analysis_text, t, personal),
+                            model=rw_model,
+                            max_rounds=DEFAULT_MAX_ROUNDS,
+                            on_round=_on_rewrite_round,
+                            complete=completer(rw_provider),
+                            revision_template=REWRITE_REVISION_TEMPLATE,
+                        )
+                        st.session_state.rewrite_validation = rw_outcome.validation
+                        st.session_state.rewrite_docx_bytes = build_analysis_docx(_name, rw_outcome.text)
+                        st.session_state.rewrite_docx_name = "Teliki_Analysi.docx"
+                        st.session_state.rewrite_docx_hash = None
+                        st.session_state.rewrite_analysis_hash = fingerprint(_analysis_text)
+                        st.session_state.rewrite_source = "api"
+                        rw_status.update(
+                            label=(
+                                "✓ Το τελικό έντυπο πέρασε τον έλεγχο."
+                                if rw_outcome.ok
+                                else "Το τελικό έντυπο δεν πέρασε μετά από όλους τους γύρους — δες τα σφάλματα παρακάτω."
+                            ),
+                            state="complete" if rw_outcome.ok else "error",
+                            expanded=not rw_outcome.ok,
+                        )
+                    except Exception as e:
+                        rw_status.update(label="Η αναδιατύπωση απέτυχε.", state="error")
+                        st.error(f"Η αναδιατύπωση απέτυχε. Έλεγξε το κλειδί {rw_provider} και δοκίμασε ξανά.")
+                        st.caption(f"Τεχνική λεπτομέρεια: {type(e).__name__}: {str(e)[:300]}")
+        st.markdown("**Ή ανέβασε έντυπο που έφτιαξες χειροκίνητα:**")
         rewritten = st.file_uploader(
             "Τελική αναδιατύπωση (.docx)",
             type=["docx"],
@@ -583,10 +683,18 @@ with tab6:
             st.session_state.rewrite_docx_name = rewritten.name
             st.session_state.rewrite_docx_hash = fingerprint(rewritten_bytes)
             st.session_state.rewrite_analysis_hash = fingerprint(st.session_state.analysis)
+            st.session_state.rewrite_source = "docx"
         if "rewrite" in _stale and rewritten is not None:
             st.info("Ανέβηκε νέο Word ή άλλαξε η ανάλυση. Πάτα «Έλεγχος τελικού εντύπου» για νέο έλεγχο.")
         result = st.session_state.get("rewrite_validation")
         if result:
+            if st.session_state.get("rewrite_docx_bytes"):
+                for _note in language_notes(
+                    st.session_state.get("language"),
+                    "",
+                    docx_text(st.session_state.rewrite_docx_bytes),
+                ):
+                    st.warning(_note)
             if result.ok:
                 st.markdown(f'<div class="ok">{result.summary()}</div>', unsafe_allow_html=True)
                 for note in getattr(result, "warnings", []):

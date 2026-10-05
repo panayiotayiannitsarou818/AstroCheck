@@ -41,6 +41,7 @@ CASE_STATE_KEYS = (
     "analysis_docx_hash",
     "rewrite_docx_hash",
     "rewrite_analysis_hash",
+    "rewrite_source",
 )
 
 
@@ -138,6 +139,7 @@ def _clear_rewrite(state) -> None:
     state.rewrite_docx_name = ""
     state.rewrite_docx_hash = None
     state.rewrite_analysis_hash = None
+    state.rewrite_source = None
 
 
 def _clear_docx_analysis(state) -> None:
@@ -165,7 +167,11 @@ def forget_stale_results(state=None, analysis_upload=None, rewrite_upload=None) 
         _clear_docx_analysis(state)
         cleared.append("analysis")
     if getattr(state, "rewrite_validation", None) is not None:
-        rewrite_changed = getattr(state, "rewrite_docx_hash", None) != fingerprint(rewrite_upload)
+        # v15: έντυπο από την αυτόματη αναδιατύπωση δεν έχει ανεβασμένο αρχείο
+        # να συγκριθεί· ακυρώνεται μόνο αν αλλάξει η ανάλυση.
+        rewrite_changed = getattr(state, "rewrite_source", None) != "api" and getattr(
+            state, "rewrite_docx_hash", None
+        ) != fingerprint(rewrite_upload)
         analysis_changed = getattr(state, "rewrite_analysis_hash", None) != fingerprint(
             getattr(state, "analysis", "") or ""
         )

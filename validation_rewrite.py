@@ -213,6 +213,26 @@ def _similar(a: set, b: set) -> bool:
     return len(a & b) / len(a | b) >= SIMILAR_SENTENCE
 
 
+def _entities(sentence: str) -> tuple:
+    """Σημεία, ζώδια και αριθμοί Οίκων που ονομάζει μια πρόταση."""
+    from validation_aspects import _name_matches
+    from validation_structure import _SIGN_ANY, _sign_from_word
+
+    points = frozenset(name for _, _, name in _name_matches(sentence))
+    signs = frozenset(
+        _sign_from_word(m.group(0)) for m in re.finditer(rf"(?<!\w)(?:{_SIGN_ANY})(?!\w)", sentence, re.IGNORECASE)
+    )
+    numbers = frozenset(re.findall(r"\d+", sentence))
+    return points, signs, numbers
+
+
+def _same_entities(a: str, b: str) -> bool:
+    """v14: «Κυβερνήτης του Οίκου είναι ο Δίας, στον Σκορπιό…» και
+    «Κυβερνήτης του Οίκου είναι η Αφροδίτη, στον Αιγόκερω…» έχουν ίδια
+    σύνταξη αλλά ΔΙΑΦΟΡΕΤΙΚΟ περιεχόμενο: δεν είναι «η ίδια πρόταση»."""
+    return _entities(a) == _entities(b)
+
+
 def _repeated_text(houses: dict[int, str]):
     """(απορρίψεις, προειδοποιήσεις).
 
@@ -230,7 +250,9 @@ def _repeated_text(houses: dict[int, str]):
             (sa, total_a), (sb, total_b) = parsed[a], parsed[b]
             matches = []
             for words_a, count_a, text_a in sa:
-                match = next((m for m in sb if _similar(words_a, m[0])), None)
+                match = next(
+                    (m for m in sb if _similar(words_a, m[0]) and _same_entities(text_a, m[2])), None
+                )
                 if match:
                     matches.append((words_a, min(count_a, match[1]), text_a))
             if not matches:
@@ -257,13 +279,70 @@ def _repeated_text(houses: dict[int, str]):
     for words, a, b, sentence in small_repeats:
         if any(a in g and b in g for g in blocked):
             continue  # ήδη μέρος απόρριψης
-        cluster = next((c for c in clusters if _similar(words, c[0])), None)
+        cluster = next(
+            (c for c in clusters if _similar(words, c[0]) and _same_entities(sentence, c[2])), None
+        )
         if cluster is None:
             clusters.append([words, {a, b}, sentence])
         else:
             cluster[1].update((a, b))
     warnings = [(sorted(c[1]), c[2][:160]) for c in clusters]
     return blocking, warnings
+
+
+# v14.5 (εντολή αναδιατύπωσης v9): μετρήσεις ύφους -- ΔΕΝ κλειδώνουν.
+_WEIGHT_LABEL = re.compile(
+    r",\s*(?:επίσης\s+|εξίσου\s+|κι\s+αυτ[όή]\s+)?(?:δυνατ[όή]|ήπι[οα])\s*,"
+    r"|(?:^|(?<=[.!;]\s))Πιο\s+ήπια,|στο\s+ίδιο\s+ήπιο\s+επίπεδο"
+    r"|,\s*(?:a\s+strong\s+one|a\s+gentle\s+one|also\s+(?:strong|gentle))\s*,"
+    r"|(?:^|(?<=[.!;]\s))More\s+gently,",
+    re.IGNORECASE | re.MULTILINE,
+)
+_THEME_LINE = re.compile(r"(?:Κεντρικό\s+θέμα|Central\s+theme)\s*:\s*([^\n]+)", re.IGNORECASE)
+MAX_ASPECT_HOUSES = 2  # κανόνας 8 της εντολής v9
+MAX_THEME_WORDS = 25  # κανόνας 15 της εντολής v9
+
+
+def _style_warnings(rewrite_text: str) -> list[str]:
+    """Όψεις που κατονομάζονται σε πολλούς Οίκους, ετικέτες βαρύτητας σε
+    πρόζα, μακριά «Κεντρικά θέματα». Βοηθητικές ενδείξεις προς ανάγνωση."""
+    from validation_aspects import _aspect_claims
+    from validation_structure import _segments_bounds
+
+    notes = []
+    houses_by_pair: dict = {}
+    for n, start, end in _segments_bounds(rewrite_text):
+        for claim in _aspect_claims(rewrite_text[start:end]):
+            houses_by_pair.setdefault(frozenset(claim[:2]), set()).add(n)
+    many = sorted(
+        ((pair, houses) for pair, houses in houses_by_pair.items() if len(houses) > MAX_ASPECT_HOUSES),
+        key=lambda item: (-len(item[1]), sorted(item[0])),
+    )
+    if many:
+        sample = "· ".join(
+            f"{'–'.join(sorted(pair))} σε {len(houses)} Οίκους" for pair, houses in many[:4]
+        )
+        notes.append(
+            f"{len(many)} από τις {len(houses_by_pair)} όψεις του εντύπου κατονομάζονται σε περισσότερους από "
+            f"{MAX_ASPECT_HOUSES} Οίκους (π.χ. {sample}). Δεν κλειδώνει τη λήψη· κάθε όψη ερμηνεύεται πλήρως "
+            "μία φορά και αλλού μεταφέρεται μόνο ό,τι διαφορετικό προσθέτει (κανόνας 8)."
+        )
+    labels = len(_WEIGHT_LABEL.findall(rewrite_text))
+    if labels >= 6:
+        notes.append(
+            f"{labels} όψεις συνοδεύονται από ετικέτα βαρύτητας («δυνατό», «ήπιο», «πιο ήπια», "
+            "«a strong one», «also gentle»). Δεν κλειδώνει τη λήψη· η ιεράρχηση φαίνεται από τη σειρά και την "
+            "έκταση, όχι από ετικέτα σε κάθε όψη (κανόνας 22)."
+        )
+    long_themes = [
+        t.strip() for t in _THEME_LINE.findall(rewrite_text) if len(t.split()) > MAX_THEME_WORDS
+    ]
+    if long_themes:
+        notes.append(
+            f"{len(long_themes)} «Κεντρικά θέματα» ξεπερνούν τις {MAX_THEME_WORDS} λέξεις (π.χ. "
+            f"«{long_themes[0][:120]}»). Δεν κλειδώνει τη λήψη (κανόνας 15)."
+        )
+    return notes
 
 
 def _content_problems(chart, source_text: str, rewrite_text: str):
@@ -514,6 +593,7 @@ def validate_rewrite(
         f"«{sample}». Δεν κλειδώνει τη λήψη· έλεγξε αν η επανάληψη είναι σκόπιμη (κανόνας 9)."
         for group, sample in repeated_warnings
     ]
+    warnings = _style_warnings(rewrite_text) + warnings
 
     ok = not (
         repeated

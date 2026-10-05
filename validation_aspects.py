@@ -665,14 +665,20 @@ def _prose_claims(text: str, _split: bool = True):
         tail_end = min(right, next_start)
         aspect, claim_end = None, e2
         via_gap = False
-        if re.match(rf"^{_DASH}$", gap):  # Α
+        dash_gap = bool(re.match(rf"^{_DASH}$", gap))
+        # v14 (πραγματικά έγγραφα): «Η πιο δυνατή σύνδεση του Ποσειδώνα είναι το
+        # τετράγωνο Σελήνη–Κρόνος» -- το δεύτερο σημείο ανοίγει ζεύγος με παύλα,
+        # άρα ο τύπος του κενού ανήκει σε ΕΚΕΙΝΟ το ζεύγος, όχι σε «Ποσειδώνας–Σελήνη».
+        if not dash_gap and re.match(rf"{_DASH}(?:{_ANY_NAME_ALT})(?!\w)", text[e2:], re.IGNORECASE):
+            continue
+        if dash_gap:  # Α
             m = re.match(rf"^\s*[:—–-]?\s*\(?\s*({_ANY_ASPECT})", text[e2:tail_end], re.IGNORECASE)
             if m:
                 aspect, claim_end = _aspect_type(m.group(1)), e2 + m.end()
         # Β. v14: όχι όταν ο τύπος του προθέματος ανήκει ήδη στην προηγούμενη
         # δήλωση («Mercury squares Jupiter and Pluto»: το «squares» είναι το
         # ρήμα του Ερμή, όχι «τετράγωνο Δία–Πλούτωνα»).
-        if aspect is None and _GAP_AB.match(gap) and gap_claim_end != e1:
+        if aspect is None and _GAP_AB.match(gap) and (dash_gap or gap_claim_end != e1):
             m = _PREFIX_B.search(prefix)
             if m:
                 aspect = _aspect_type(m.group(1))
@@ -701,13 +707,8 @@ def _prose_claims(text: str, _split: bool = True):
             via_gap = aspect is not None
         if aspect is None:
             continue
-        # v14: «… μαζί με το εξάγωνο Ποσειδώνα–Πλούτωνα» -- το δεύτερο σημείο
-        # ανοίγει δικό του ζεύγος με παύλα· δεν είναι «Ποσειδώνας–Ποσειδώνας».
-        # (Η ρητή αυτο-όψη «Ο Ήλιος σχηματίζει τετράγωνο με τον Ήλιο» μένει σφάλμα.)
-        if n1 == n2 and (
-            not _split or re.match(rf"{_DASH}(?:{_ANY_NAME_ALT})", text[e2:], re.IGNORECASE)
-        ):
-            continue
+        if n1 == n2 and not _split:
+            continue  # το σημείο της επεξήγησης επαναλαμβάνεται μέσα της
         clause_start = left + max(
             (m.end() for m in _CLAUSE_BOUNDARY.finditer(text[left:s1])), default=0
         )

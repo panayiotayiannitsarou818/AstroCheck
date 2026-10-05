@@ -29,3 +29,129 @@ REWRITE_ENGLISH_ADDENDUM = (
     + ", ".join(f"«{t}»" for k, t in _SECTIONS_EN.items() if not k.startswith("Παράρτημα"))
     + "). Στο τέλος κάθε Οίκου γράψε «Central theme:» αντί για «Κεντρικό θέμα:»."
 )
+
+
+# ---------------------------------------------------------------------------
+# v14: ΓΛΩΣΣΑ. Η επιλογή «Γλώσσα τελικής ανάλυσης» ορίζει τη γλώσσα του
+# ΤΕΛΙΚΟΥ ΕΝΤΥΠΟΥ του πελάτη. Η τεχνική ανάλυση μπορεί να είναι σε
+# οποιαδήποτε από τις δύο γλώσσες -- ο έλεγχος τις δέχεται και τις δύο. Το
+# μήνυμα της αναδιατύπωσης χτίζεται από τη γλώσσα που ΠΡΑΓΜΑΤΙΚΑ έχει η
+# ελεγμένη ανάλυση, ώστε να μη λέει ποτέ «η ανάλυση είναι στα αγγλικά» για
+# ελληνικό κείμενο (αυτό έκανε το μοντέλο να ρωτά «πώς θέλεις να προχωρήσω;»).
+# ---------------------------------------------------------------------------
+import re as _re
+
+import lexicon_en as _EN
+
+
+def is_english_choice(language) -> bool:
+    return str(language or "").strip().lower() in ("αγγλικά", "english", "en")
+
+
+def detect_language(text: str) -> str:
+    """«el», «en» ή «» (άδειο/αμφίβολο) -- από την αναλογία ελληνικών γραμμάτων."""
+    greek = len(_re.findall(r"[α-ωά-ώΑ-ΩΆ-Ώ]", text or ""))
+    latin = len(_re.findall(r"[A-Za-z]", text or ""))
+    if greek + latin < 200:
+        return ""
+    return "el" if greek >= latin else "en"
+
+
+_LANGUAGE_NAME = {"el": "ελληνικά", "en": "αγγλικά"}
+
+APP_VERSION = "v15.0"
+
+# Μπαίνει ΠΡΩΤΗ γραμμή του μηνύματος (όχι στο τέλος, όπου δεν φαινόταν) και
+# γράφεται και στα αγγλικά, ώστε να μην μπορεί να παραβλεφθεί.
+ANALYSIS_ENGLISH_HEADER = (
+    "ΓΛΩΣΣΑ ΠΑΡΑΔΟΤΕΟΥ: ΑΓΓΛΙΚΑ — WRITE THE ENTIRE ANALYSIS IN ENGLISH.\n"
+    "Γράψε ΟΛΟΚΛΗΡΗ την ανάλυση στα αγγλικά, με την υποχρεωτική ορολογία της ενότητας "
+    "«ENGLISH OUTPUT — MANDATORY TERMINOLOGY» της εντολής (τίτλοι «1st House» … «12th House», αγγλικοί "
+    "τίτλοι ενοτήτων, αγγλικά ονόματα σημείων, ζωδίων, όψεων και κατηγοριών βαρύτητας). Οι οδηγίες είναι "
+    "στα ελληνικά· το Word που θα παραδώσεις είναι στα αγγλικά. Μη ρωτήσεις σε ποια γλώσσα να γράψεις.\n\n"
+)
+ANALYSIS_ENGLISH_ADDENDUM = ANALYSIS_ENGLISH_HEADER  # συμβατότητα
+
+
+def analysis_paste_message(language) -> str:
+    if is_english_choice(language):
+        return ANALYSIS_ENGLISH_HEADER + FULL_ANALYSIS_PASTE_MESSAGE
+    return FULL_ANALYSIS_PASTE_MESSAGE
+
+
+def _mapping(mapping) -> str:
+    return "; ".join(f"{gr} → {en}" for gr, en in mapping.items())
+
+
+def rewrite_paste_message(name: str, language, analysis_text: str = "") -> str:
+    """Έτοιμο μήνυμα αναδιατύπωσης για τη ζητούμενη γλώσσα του τελικού εντύπου
+    και τη γλώσσα που έχει πράγματι η ελεγμένη τεχνική ανάλυση. Η οδηγία
+    γλώσσας μπαίνει ΠΡΩΤΗ, για να μην παραβλέπεται."""
+    body = REWRITE_PASTE_MESSAGE.format(name=name)
+    source = detect_language(analysis_text)
+    if is_english_choice(language):
+        if source == "en":
+            return (
+                "ΓΛΩΣΣΑ ΠΑΡΑΔΟΤΕΟΥ: ΑΓΓΛΙΚΑ — WRITE THE ENTIRE FINAL DOCUMENT IN ENGLISH.\n"
+                + REWRITE_ENGLISH_ADDENDUM.replace("\n\nΓΛΩΣΣΑ: ", "")
+                + " Μη ρωτήσεις πώς να προχωρήσεις.\n\n"
+                + body
+            )
+        sections = "; ".join(
+            f"«{gr}» → «{en}»" for gr, en in _SECTIONS_EN.items() if not gr.startswith("Παράρτημα")
+        )
+        source_line = (
+            "Το AstroCheck_Analysi είναι στα ΕΛΛΗΝΙΚΑ και παραμένει η μοναδική πηγή. "
+            if source == "el"
+            else "Το AstroCheck_Analysi παραμένει η μοναδική πηγή, σε όποια γλώσσα κι αν είναι γραμμένο. "
+        )
+        return (
+            "ΓΛΩΣΣΑ ΠΑΡΑΔΟΤΕΟΥ: ΑΓΓΛΙΚΑ — WRITE THE ENTIRE FINAL DOCUMENT IN ENGLISH.\n"
+            + source_line
+            + "Γράψε ολόκληρο το τελικό έντυπο στα ΑΓΓΛΙΚΑ: απόδωσε και αναδιατύπωσε το περιεχόμενο της πηγής "
+            "απευθείας στα αγγλικά, χωρίς να ζητήσεις αγγλική εκδοχή της ανάλυσης και χωρίς να ρωτήσεις "
+            "πώς να προχωρήσεις. Ο μηχανικός έλεγχος συγκρίνει κανονικά αγγλικό έντυπο με ελληνική πηγή.\n"
+            "Τίτλοι Οίκων, ο καθένας σε δική του γραμμή: «1st House», «2nd House», «3rd House», "
+            "«4th House» … «12th House». Στο τέλος κάθε Οίκου γράψε «Central theme:».\n"
+            f"Τίτλοι ενοτήτων (όσες υπάρχουν στην πηγή): {sections}.\n"
+            "Χρησιμοποίησε ΜΟΝΟ αυτά τα αγγλικά ονόματα, χωρίς συνώνυμα:\n"
+            f"Σημεία: {_mapping(_EN.POINT_NAMES)}.\n"
+            f"Ζώδια: {_mapping(_EN.SIGN_NAMES)}.\n"
+            f"Όψεις: {_mapping(_EN.ASPECT_NAMES)}.\n"
+            "Τοποθετήσεις: «<Planet> is in the <N>th House», «<Planet> in <Sign>».\n\n" + body
+        )
+    if source == "en":
+        return (
+            "ΓΛΩΣΣΑ ΠΑΡΑΔΟΤΕΟΥ: ΕΛΛΗΝΙΚΑ.\n"
+            "Το AstroCheck_Analysi είναι στα ΑΓΓΛΙΚΑ και παραμένει η μοναδική πηγή. Γράψε ολόκληρο το τελικό "
+            "έντυπο στα ΕΛΛΗΝΙΚΑ, με τίτλους «1ος Οίκος» … «12ος Οίκος», τους ελληνικούς τίτλους ενοτήτων και "
+            "«Κεντρικό θέμα:» στο τέλος κάθε Οίκου. Μη ρωτήσεις πώς να προχωρήσεις.\n\n" + body
+        )
+    return body
+
+
+def language_notes(language, analysis_text: str = "", final_text: str = "") -> list[str]:
+    """Σημειώσεις για ασυμφωνία γλώσσας. Δεν κλειδώνουν τίποτα."""
+    wanted = "en" if is_english_choice(language) else "el"
+    notes = []
+    source = detect_language(analysis_text)
+    if source and source != wanted:
+        notes.append(
+            f"Η τεχνική ανάλυση είναι στα {_LANGUAGE_NAME[source]}, ενώ η επιλεγμένη γλώσσα είναι τα "
+            f"{_LANGUAGE_NAME[wanted]}. Δεν είναι σφάλμα: η επιλογή γλώσσας αφορά το τελικό έντυπο, και το "
+            f"μήνυμα της αναδιατύπωσης ζητά ήδη {_LANGUAGE_NAME[wanted]} έντυπο από αυτή την πηγή."
+        )
+    final = detect_language(final_text)
+    if final and final != wanted:
+        notes.append(
+            f"Το τελικό έντυπο είναι στα {_LANGUAGE_NAME[final]}, ενώ η επιλεγμένη γλώσσα είναι τα "
+            f"{_LANGUAGE_NAME[wanted]}. Άλλαξε την επιλογή γλώσσας ή ζήτησε ξανά την αναδιατύπωση."
+        )
+    return notes
+
+
+def rewrite_language_block(name: str, language, analysis_text: str = "") -> str:
+    """Μόνο η οδηγία γλώσσας του μηνύματος αναδιατύπωσης (για την αυτόματη ροή)."""
+    message = rewrite_paste_message(name, language, analysis_text)
+    body = REWRITE_PASTE_MESSAGE.format(name=name)
+    return message[: -len(body)].strip() if message.endswith(body) else ""
