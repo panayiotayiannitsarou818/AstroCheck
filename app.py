@@ -4,6 +4,7 @@ import streamlit as st
 import pandas as pd
 from pathlib import Path
 from prompts import build_master_prompt
+from pipeline import STAGE_ANALYSIS, STAGE_REWRITE, run_full_pipeline
 from docx_builder import build_audit_docx, build_analysis_docx
 from generator import (
     DEFAULT_MAX_ROUNDS,
@@ -329,6 +330,123 @@ with st.sidebar:
         reset_case_state()
         st.rerun()
 
+REWRITE_COMMAND_PATH = Path(__file__).resolve().parent / "Desmeftiki_Entoli_Telikis_Anadiatyposis_v9.docx"
+
+
+def _run_full_pipeline_ui(provider, api, model, language, instructions_upload, style_upload) -> None:
+    """v17: ανάλυση → έλεγχος → τελικό έντυπο → έλεγχος, με ενημέρωση ανά γύρο.
+    Τα αποτελέσματα αποθηκεύονται στα ΙΔΙΑ κλειδιά με τις καρτέλες 2 και 3, ώστε
+    να φαίνονται και εκεί."""
+    chart_shared = _shared_chart(st.session_state.chart)
+    personal = {"Όνομα": chart_shared.name}
+    ins_text = docx_text(instructions_upload.getvalue()) if instructions_upload else default_instructions_text
+    sty_text = docx_text(style_upload.getvalue()) if style_upload else default_style_text
+    ins_name = instructions_upload.name if instructions_upload else "Ενσωματωμένες οδηγίες v6"
+    sty_name = style_upload.name if style_upload else "Ενσωματωμένος καθαρός οδηγός ύφους"
+    st.session_state.language = language
+    with st.status("Πλήρης αυτόματη διαδικασία σε εξέλιξη…", expanded=True) as status:
+
+        def _on_round(stage, r):
+            status.write(
+                f"{'✓' if r.ok else '✗'} {stage} — γύρος {r.number} ({r.kind}): "
+                + ("εγκρίθηκε." if r.ok else f"{r.error_count} σφάλματα — διορθώνεται…")
+            )
+
+        try:
+            result = run_full_pipeline(
+                chart=chart_shared,
+                personal=personal,
+                language=language,
+                instructions_text=ins_text,
+                style_text=sty_text,
+                instructions_name=ins_name,
+                style_name=sty_name,
+                rewrite_command_text=docx_text(REWRITE_COMMAND_PATH.read_bytes()),
+                api_key=api,
+                provider=provider,
+                model=model,
+                max_rounds=_max_rounds(),
+                on_round=_on_round,
+            )
+        except Exception as e:
+            status.update(label="Η αυτόματη διαδικασία διακόπηκε.", state="error")
+            st.session_state.auto_result = {"error": f"{type(e).__name__}: {str(e)[:300]}", "provider": provider}
+            return
+        # ίδια κλειδιά με τις καρτέλες 2 και 3
+        st.session_state.analysis = result.analysis_text
+        st.session_state.validation = result.analysis_validation
+        st.session_state.analysis_source = "api"
+        st.session_state.analysis_docx_bytes = None
+        st.session_state.analysis_docx_name = ""
+        if result.final_text:
+            st.session_state.rewrite_validation = result.final_validation
+            st.session_state.rewrite_docx_bytes = build_analysis_docx(chart_shared.name, result.final_text)
+            st.session_state.rewrite_docx_name = "Teliki_Analysi.docx"
+            st.session_state.rewrite_docx_hash = None
+            st.session_state.rewrite_analysis_hash = fingerprint(result.analysis_text)
+            st.session_state.rewrite_source = "api"
+        st.session_state.auto_result = {
+            "ok": result.ok,
+            "stopped_at": result.stopped_at,
+            "analysis_rounds": len(result.analysis_rounds),
+            "final_rounds": len(result.final_rounds),
+            "name": chart_shared.name,
+        }
+        status.update(
+            label="✓ Ολοκληρώθηκε: εγκρίθηκαν και η ανάλυση και το τελικό έντυπο."
+            if result.ok
+            else f"Η διαδικασία σταμάτησε στο στάδιο «{result.stopped_at}» χωρίς έγκριση.",
+            state="complete" if result.ok else "error",
+        )
+
+
+def _auto_result_panel() -> None:
+    """Αποτέλεσμα της πλήρους αυτόματης διαδικασίας, με τις λήψεις, στην καρτέλα 1."""
+    res = st.session_state.get("auto_result")
+    if not res:
+        return
+    with st.container(border=True):
+        st.markdown("#### Αποτέλεσμα αυτόματης διαδικασίας")
+        if res.get("error"):
+            st.error(f"Η αυτόματη διαδικασία διακόπηκε. Έλεγξε το κλειδί {res.get('provider')} και δοκίμασε ξανά.")
+            st.caption("Τεχνική λεπτομέρεια: " + res["error"])
+            return
+        analysis_ok = bool(st.session_state.validation and st.session_state.validation.ok)
+        final = st.session_state.get("rewrite_validation")
+        if analysis_ok:
+            st.success(f"✓ Η ανάλυση εγκρίθηκε ({res['analysis_rounds']} γύροι).")
+            st.download_button(
+                "⬇️ Λήψη ελεγμένης πλήρους ανάλυσης (Word)",
+                build_analysis_docx(res["name"], st.session_state.analysis),
+                file_name="Pliris_Astrologiki_Analysi.docx",
+                width="stretch",
+                key="auto_download_analysis",
+            )
+        if final is not None and final.ok and st.session_state.get("rewrite_docx_bytes"):
+            st.success(f"✓ Το τελικό έντυπο του πελάτη εγκρίθηκε ({res['final_rounds']} γύροι).")
+            for note in getattr(final, "warnings", []):
+                st.warning(note)
+            st.download_button(
+                "⬇️ Λήψη τελικού εντύπου πελάτη (Word)",
+                st.session_state.rewrite_docx_bytes,
+                file_name=st.session_state.get("rewrite_docx_name") or "Teliki_Analysi.docx",
+                type="primary",
+                width="stretch",
+                key="auto_download_final",
+            )
+            st.caption("Ο έλεγχος δεν κρίνει αν διατηρήθηκε όλο το νόημα· διάβασε το έντυπο πριν το παραδώσεις.")
+        if res.get("stopped_at"):
+            failed = st.session_state.validation if res["stopped_at"] == STAGE_ANALYSIS else final
+            st.error(
+                f"Το στάδιο «{res['stopped_at']}» δεν εγκρίθηκε μετά από όλους τους γύρους. "
+                "Δες τα σφάλματα παρακάτω· μπορείς να συνεχίσεις από την αντίστοιχη καρτέλα."
+            )
+            if failed is not None:
+                with st.expander("Σφάλματα", expanded=True):
+                    for line in failed.details_lines():
+                        st.write("•", line)
+
+
 MAIN_TABS = ["1 · Αρχεία", TAB_ANALYSIS, "3 · Τελική αναδιατύπωση"]
 # Μια συνεδρία που είχε ανοιχτή καρτέλα με παλιό όνομα (π.χ. «3 · Τεχνικό Word»,
 # που καταργήθηκε) επιστρέφει με ασφάλεια στην πρώτη καρτέλα.
@@ -360,6 +478,27 @@ with tab1:
         style = st.file_uploader(
             "Νεότερο πρότυπο ύφους", type=["docx"], key=f"style_{st.session_state.uploader_gen}"
         )
+    # v17: ΠΛΗΡΗΣ ΑΥΤΟΜΑΤΗ ΔΙΑΔΙΚΑΣΙΑ — ο χρήστης ανεβάζει μόνο το PDF.
+    with st.container(border=True):
+        auto_full = st.toggle(
+            "🤖 Πλήρης αυτόματη διαδικασία (ανεβάζεις μόνο το PDF)",
+            value=True,
+            key="auto_full",
+            help="Μετά την ανάγνωση του PDF, η εφαρμογή δημιουργεί την ανάλυση, την ελέγχει, γράφει "
+            "το τελικό έντυπο του πελάτη και το ελέγχει — με διόρθωση μέχρι να εγκριθεί το καθένα.",
+        )
+        if auto_full:
+            auto_provider, auto_api, auto_model = _api_choice("full")
+            auto_language = st.selectbox(
+                "Γλώσσα τελικού εντύπου πελάτη", ["Ελληνικά", "Αγγλικά"], key="auto_language"
+            )
+            st.caption(
+                "Μετά το «Ανάγνωση και έλεγχος PDF» όλα γίνονται αυτόματα: ανάλυση → έλεγχος → "
+                f"τελικό έντυπο → έλεγχος, μέχρι να εγκριθεί το καθένα ({_cap_text(_max_rounds())}). "
+                "Μπορεί να διαρκέσει αρκετά λεπτά· μην κλείσεις τη σελίδα."
+            )
+            if not auto_api:
+                st.warning("Για την αυτόματη διαδικασία χρειάζεται κλειδί API (ή όρισέ το στα Secrets).")
     if pdf and st.button("Ανάγνωση και έλεγχος PDF", type="primary", width="stretch"):
         with st.spinner("Διαβάζεται το PDF…"):
             ok, new_chart, err = handle_pdf_upload(pdf.getvalue(), pdf.name)
@@ -368,16 +507,21 @@ with tab1:
             # (βλ. εκεί το γιατί) και ήδη γράφει κατευθείαν στο πραγματικό
             # st.session_state (δεν περάσαμε state=... εδώ) -- εδώ μένει μόνο
             # η παρουσίαση.
-            if ok:
+            if ok and auto_full and auto_api:
+                st.session_state.pop("auto_result", None)
+            elif ok:
                 st.session_state._requested_main_tab = TAB_ANALYSIS
                 st.success("✓ Το PDF διαβάστηκε. Συνέχισε στην καρτέλα «2 · Ανάλυση & έλεγχος» →")
                 st.rerun()
-            else:
-                st.error(
-                    "Η ανάγνωση σταμάτησε με ασφάλεια — το PDF μπορεί να μην είναι το σωστό Astrodienst Data Sheet, ή η μορφή του διαφέρει."
-                )
-                with st.expander("Τεχνική λεπτομέρεια"):
-                    st.code(str(err))
+        if ok and auto_full and auto_api:
+            _run_full_pipeline_ui(auto_provider, auto_api, auto_model, auto_language, instructions, style)
+            st.rerun()
+        if not ok:
+            st.error(
+                "Η ανάγνωση σταμάτησε με ασφάλεια — το PDF μπορεί να μην είναι το σωστό Astrodienst Data Sheet, ή η μορφή του διαφέρει."
+            )
+            with st.expander("Τεχνική λεπτομέρεια"):
+                st.code(str(err))
     if st.session_state.chart and not pdf:
         st.info(
             f"Ήδη ελεγμένος χάρτης στη συνεδρία: **{st.session_state.chart.name}**. "
@@ -393,6 +537,7 @@ with tab1:
         )
     if st.session_state.chart:
         _privacy_panel(st.session_state.chart)
+    _auto_result_panel()
 
 instructions_text = (
     docx_text(instructions.getvalue()) if instructions else default_instructions_text

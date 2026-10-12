@@ -13,6 +13,7 @@ from validation_patterns import (
     _HOUSE_PATTERNS,
     _HOUSE_PATTERNS_ALT,
     _HEADING_PREFIX,
+    _HOUSE_WORDS,
     _NAME_FORMS,
     _RULER_INTRO_PATTERNS,
     _SECTION_PATTERNS,
@@ -582,11 +583,37 @@ def _phrase_bounds(text: str, start: int, end: int) -> tuple[int, int]:
     return left, (m.start() if m else len(text))
 
 
-def _ruler_claims_in_body(segment: str) -> list[tuple[str, str]]:
-    """(όνομα, ρόλος) με ρόλο «κύριος» ή «παραδοσιακός»."""
+def _bare_ruler_markers(segment: str, house_n: int) -> list:
+    """v16: «κυβερνήτης» ΧΩΡΙΣ λέξη-ρόλο, όταν η φράση αναφέρεται ρητά στον ΙΔΙΟ
+    Οίκο: «ο Άρης είναι ο κυβερνήτης αυτού του Οίκου», «κυβερνήτης του Οίκου»,
+    «κυβερνήτης του 1ου Οίκου», "the ruler of this House". Πριν, ένας λάθος
+    πλανήτης σε τέτοια φράση περνούσε στο τελικό έντυπο. Φράσεις για άλλον Οίκο
+    («κυβερνήτης του 8ου Οίκου», «του Οίκου της οικειότητας») δεν μετρούν."""
+    word = _HOUSE_WORDS[house_n - 1].lower()
+    pattern = re.compile(
+        rf"(?<!\w)κυβερν\w*\s+(?:"
+        rf"αυτού\s+του\s+(?:Οίκου|τομέα)"
+        rf"|του\s+Οίκου(?!\s+(?:της|του|των)(?!\w))(?!\s*\d)"
+        rf"|του\s+{house_n}(?:ου|ος)\s+Οίκου"
+        rf"|του\s+{word[:-2]}ου\s+Οίκου)(?!\w)"
+        rf"|(?<![A-Za-z])ruler\s+of\s+(?:this|the)\s+(?:{house_n}{EN.ORDINAL_SUFFIX}\s+)?House\b",
+        re.IGNORECASE,
+    )
+    return list(pattern.finditer(segment))
+
+
+def _ruler_claims_in_body(segment: str, house_n: int | None = None) -> list[tuple[str, str]]:
+    """(όνομα, ρόλος) με ρόλο «κύριος» ή «παραδοσιακός».
+    v16: με house_n ελέγχεται και ο σκέτος «κυβερνήτης» του ίδιου Οίκου (ρόλος «κυβερνήτης»)."""
     claims = []
     markers = [(m, "κύριος") for m in _ROLE_MODERN.finditer(segment)]
     markers += [(m, "παραδοσιακός") for m in _ROLE_TRAD.finditer(segment)]
+    if house_n is not None:
+        taken = [(m.start(), m.end()) for m, _ in markers]
+        markers += [
+            (m, "κυβερνήτης") for m in _bare_ruler_markers(segment, house_n)
+            if not any(a <= m.start() < b or m.start() <= a < m.end() for a, b in taken)
+        ]
     for m, role in markers:
         left, right = _phrase_bounds(segment, m.start(), m.end())
         best = None
@@ -808,7 +835,7 @@ def _ruler_role_errors(chart, text: str) -> list[tuple[int, str, str, str]]:
     for n, start, end in _segments_bounds(text):
         modern, traditional = RULERS[chart.cusps[n - 1].sign]
         allowed = [r for r in (modern, traditional) if r]
-        for name, role in _ruler_claims_in_body(text[start:end]):
+        for name, role in _ruler_claims_in_body(text[start:end], n):
             if name not in allowed:
                 wrong.append((n, name, " / ".join(allowed), f"κείμενο ({role})"))
     return wrong

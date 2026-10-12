@@ -45,3 +45,18 @@ def test_rewrite_prompt_asks_for_quincunx_without_degrees():
     command = "Η εντολή\nΚανόνες.\nΗμερολόγιο διορθώσεων ανά ανάλυση\nΥΠΟΧΡΕΩΤΙΚΟΣ ΤΕΛΙΚΟΣ ΕΛΕΓΧΟΣ ΑΜΕΤΑΒΛΗΤΩΝ ΔΕΔΟΜΕΝΩΝ\nΈλεγχος."
     prompt = build_rewrite_prompt(command, "ανάλυση", "A.M.", "")
     assert "«χιαστί όψη»" in prompt and "χωρίς τον αριθμό «150°»" in prompt
+
+
+# --- v16.1: σκέτος «κυβερνήτης» του ίδιου Οίκου στο τελικό έντυπο ----------
+def test_bare_ruler_phrases_of_the_same_house_are_recognised():
+    from validation_structure import _ruler_claims_in_body
+    for s in ["Ο Άρης είναι ο κυβερνήτης αυτού του Οίκου.", "Ο κυβερνήτης του Οίκου είναι ο Άρης.",
+              "Κυβερνήτης του 1ου Οίκου είναι ο Άρης.", "The ruler of this House is Mars."]:
+        assert ("Άρης", "κυβερνήτης") in _ruler_claims_in_body(s, 1), s
+
+
+def test_ruler_phrases_about_another_house_are_not_claims_for_this_one():
+    from validation_structure import _ruler_claims_in_body
+    for s in ["Ο Κρόνος, κυβερνήτης του 8ου Οίκου, βρίσκεται εδώ.",
+              "Η Αφροδίτη, κυβερνήτης του Οίκου της οικειότητας, συνδέεται."]:
+        assert not any(r == "κυβερνήτης" for _, r in _ruler_claims_in_body(s, 1)), s
