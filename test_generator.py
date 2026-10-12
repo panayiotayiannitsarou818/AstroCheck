@@ -63,3 +63,53 @@ def test_stops_after_max_rounds_and_keeps_best_attempt():
 def test_revision_prompt_survives_braces():
     text = revision_prompt("εντολή {x}", "ανάλυση {y}", ["σφάλμα {z}"])
     assert "{x}" in text and "{y}" in text and "{z}" in text
+
+
+# --- v16: «μέχρι να εγκριθεί» ----------------------------------------------
+from generator import DEFAULT_MAX_ROUNDS, MAX_ROUNDS_LIMIT, max_rounds_from
+
+
+def test_default_keeps_correcting_beyond_three_rounds_until_approved():
+    # 5 απορρίψεις και έγκριση στον 6ο γύρο: με την προεπιλογή ο κύκλος δεν σταματά στους 3.
+    answers = iter(["ΛΑΘΟΣ"] * 5 + ["σωστό"])
+    out = generate_validated("k", "Ε", _validator(["ΛΑΘΟΣ"]), complete=lambda k, t, m: next(answers))
+    assert out.ok and len(out.rounds) == 6 and out.text == "σωστό"
+    assert DEFAULT_MAX_ROUNDS >= 6
+
+
+def test_safety_cap_stops_a_loop_that_never_passes():
+    calls = []
+    out = generate_validated(
+        "k", "Ε", _validator(["ΛΑΘΟΣ"]), max_rounds=4, complete=lambda k, t, m: calls.append(t) or "ΛΑΘΟΣ"
+    )
+    assert not out.ok and len(calls) == 4
+
+
+def test_a_failed_request_during_correction_does_not_stop_the_loop():
+    state = {"n": 0}
+
+    def complete(k, t, m):
+        state["n"] += 1
+        if state["n"] == 1:
+            return "ΛΑΘΟΣ"
+        if state["n"] == 2:
+            raise TimeoutError("δίκτυο")
+        return "σωστό"
+
+    out = generate_validated("k", "Ε", _validator(["ΛΑΘΟΣ"]), complete=complete)
+    assert out.ok and out.text == "σωστό"
+    assert "απέτυχε" in out.rounds[1].summary and len(out.rounds) == 3
+
+
+def test_max_rounds_setting_is_parsed_and_clamped():
+    assert max_rounds_from("15") == 15
+    assert max_rounds_from(0) == 0  # 0 = χωρίς όριο
+    assert max_rounds_from(999) == MAX_ROUNDS_LIMIT
+    assert max_rounds_from("όχι αριθμός") == DEFAULT_MAX_ROUNDS
+    assert max_rounds_from(None) == DEFAULT_MAX_ROUNDS
+
+
+def test_unlimited_mode_keeps_going_until_approved():
+    answers = iter(["ΛΑΘΟΣ"] * 40 + ["σωστό"])
+    out = generate_validated("k", "Ε", _validator(["ΛΑΘΟΣ"]), max_rounds=0, complete=lambda k, t, m: next(answers))
+    assert out.ok and len(out.rounds) == 41

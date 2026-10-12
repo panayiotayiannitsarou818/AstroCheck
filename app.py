@@ -7,6 +7,7 @@ from prompts import build_master_prompt
 from docx_builder import build_audit_docx, build_analysis_docx
 from generator import (
     DEFAULT_MAX_ROUNDS,
+    max_rounds_from,
     DEFAULT_MODELS,
     PROVIDER_SETTINGS,
     PROVIDERS,
@@ -230,6 +231,16 @@ def _secret(name: str) -> str:
         return ""
 
 
+def _max_rounds() -> int:
+    """v16: όριο ασφαλείας του κύκλου «μέχρι να εγκριθεί» (Secrets: AUTO_MAX_ROUNDS)."""
+    value = _secret("AUTO_MAX_ROUNDS")
+    return max_rounds_from(DEFAULT_MAX_ROUNDS if value in (None, "") else value)
+
+
+def _cap_text(cap: int) -> str:
+    return "χωρίς όριο γύρων" if cap == 0 else f"όριο ασφαλείας: {cap} γύροι"
+
+
 def _api_choice(scope: str):
     """Επιλογή μοντέλου (Claude ή OpenAI) και κλειδί API. Επιστρέφει
     (πάροχος, κλειδί, μοντέλο). Κάθε στάδιο (ανάλυση, αναδιατύπωση) έχει δική του επιλογή."""
@@ -448,9 +459,10 @@ with tab4:
             with st.container(border=True):
                 st.markdown("#### 🤖 Αυτόματη δημιουργία")
                 provider, api, model = _api_choice("analysis")
+                rounds_cap = _max_rounds()
                 st.caption(
-                    f"Η ανάλυση ελέγχεται αυτόματα και, αν χρειαστεί, διορθώνεται αυτόματα "
-                    f"(έως {DEFAULT_MAX_ROUNDS} γύροι συνολικά)."
+                    "Η ανάλυση ελέγχεται αυτόματα και, αν δεν εγκριθεί, διορθώνεται ξανά και ξανά "
+                    f"μέχρι να εγκριθεί ({_cap_text(rounds_cap)})."
                 )
                 if st.button(
                     "Δημιουργία πλήρους ανάλυσης",
@@ -472,8 +484,8 @@ with tab4:
                                     else f"{r.error_count} σφάλματα — "
                                     + (
                                         "στέλνονται για διόρθωση…"
-                                        if r.number < DEFAULT_MAX_ROUNDS
-                                        else "τέλος γύρων."
+                                        if rounds_cap == 0 or r.number < rounds_cap
+                                        else "έφτασε το όριο ασφαλείας γύρων."
                                     )
                                 )
                             )
@@ -484,7 +496,7 @@ with tab4:
                                 prompt,
                                 validate=lambda t: validate_analysis(chart, t, personal),
                                 model=model,
-                                max_rounds=DEFAULT_MAX_ROUNDS,
+                                max_rounds=rounds_cap,
                                 on_round=_on_round,
                                 complete=completer(provider),
                             )
@@ -497,7 +509,7 @@ with tab4:
                                 label=(
                                     "✓ Η ανάλυση πέρασε τον έλεγχο."
                                     if outcome.ok
-                                    else "Η ανάλυση δεν πέρασε μετά από όλους τους γύρους — δες τα σφάλματα παρακάτω."
+                                    else f"Η ανάλυση δεν εγκρίθηκε ούτε μετά από {rounds_cap} γύρους (όριο ασφαλείας) — δες τα σφάλματα παρακάτω και πάτησε ξανά για νέα προσπάθεια."
                                 ),
                                 state="complete" if outcome.ok else "error",
                                 expanded=not outcome.ok,
@@ -611,9 +623,10 @@ with tab6:
         with st.container(border=True):
             st.markdown("#### 🤖 Αυτόματη αναδιατύπωση")
             rw_provider, rw_api, rw_model = _api_choice("rewrite")
+            rw_rounds_cap = _max_rounds()
             st.caption(
                 "Στέλνεται η Δεσμευτική Εντολή μαζί με την ελεγμένη ανάλυση. Το τελικό έντυπο ελέγχεται "
-                f"αυτόματα και, αν χρειαστεί, διορθώνεται (έως {DEFAULT_MAX_ROUNDS} γύροι συνολικά). "
+                f"αυτόματα και, αν δεν εγκριθεί, διορθώνεται ξανά μέχρι να εγκριθεί ({_cap_text(rw_rounds_cap)}). "
                 "Ο έλεγχος δεν κρίνει αν διατηρήθηκε όλο το νόημα· διάβασε το έντυπο πριν το παραδώσεις."
             )
             if st.button(
@@ -644,7 +657,7 @@ with tab6:
                             rw_prompt,
                             validate=lambda t: validate_rewrite(chart, _analysis_text, t, personal),
                             model=rw_model,
-                            max_rounds=DEFAULT_MAX_ROUNDS,
+                            max_rounds=rw_rounds_cap,
                             on_round=_on_rewrite_round,
                             complete=completer(rw_provider),
                             revision_template=REWRITE_REVISION_TEMPLATE,
@@ -659,7 +672,7 @@ with tab6:
                             label=(
                                 "✓ Το τελικό έντυπο πέρασε τον έλεγχο."
                                 if rw_outcome.ok
-                                else "Το τελικό έντυπο δεν πέρασε μετά από όλους τους γύρους — δες τα σφάλματα παρακάτω."
+                                else f"Το τελικό έντυπο δεν εγκρίθηκε ούτε μετά από {rw_rounds_cap} γύρους (όριο ασφαλείας) — δες τα σφάλματα παρακάτω και πάτησε ξανά για νέα προσπάθεια."
                             ),
                             state="complete" if rw_outcome.ok else "error",
                             expanded=not rw_outcome.ok,

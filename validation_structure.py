@@ -12,18 +12,31 @@ from validation_patterns import (
     _HOUSE_HEADING_PATTERNS,
     _HOUSE_PATTERNS,
     _HOUSE_PATTERNS_ALT,
+    _HEADING_PREFIX,
     _NAME_FORMS,
     _RULER_INTRO_PATTERNS,
+    _SECTION_PATTERNS,
     _name_pattern,
 )
 
 
-def _house_segments(text: str) -> dict[int, str]:
-    """Εντοπίζει το τμήμα κειμένου κάθε Οίκου (από την επικεφαλίδα του μέχρι
-    την επόμενη), με αναζήτηση με σειρά 1..12 ώστε να μην μπερδεύονται
-    αριθμοί Οίκων που αναφέρονται εν παρόδω αλλού στο κείμενο."""
-    starts = {}
-    cursor = 0
+# v16: οι τελικές ενότητες (μετά τον 12ο Οίκο) αναγνωρίζονται ως ΤΙΤΛΟΣ, δηλαδή
+# ως ολόκληρη σύντομη γραμμή, ώστε μια απλή αναφορά μέσα στο κείμενο να μην
+# κόβει τον 12ο Οίκο. Τα συνώνυμα του Παραρτήματος («Επιβεβαιωμένες όψεις»)
+# σκόπιμα δεν περιλαμβάνονται: μπορεί να είναι υπότιτλος μέσα σε Οίκο.
+_TAIL_TITLES = list(_SECTION_PATTERNS.values()) + [
+    r"Τελική\s+σύνθεση",
+    r"Προτάσεις\s+προσωπικής\s+(?:εξέλιξης|ανάπτυξης)(?:\s+και\s+υποστήριξης)?",
+]
+_TAIL_HEADING = re.compile(
+    r"(?im)^[ \t]*" + _HEADING_PREFIX + r"(?:\*\*)?(?:" + "|".join(_TAIL_TITLES) + r")[^\r\n]{0,40}$"
+)
+_TAIL_ANYWHERE = re.compile(r"Τελική συνθετική εικόνα|Final\s+synthesis")
+
+
+def _scan_house_starts(text: str, cursor: int) -> list[tuple[int, int]]:
+    """(Οίκος, θέση) κάθε επικεφαλίδας, με αναζήτηση με σειρά 1..12 από το cursor."""
+    starts = []
     for n in range(1, 13):
         m = _HOUSE_HEADING_PATTERNS[n - 1].search(text, cursor)
         if not m:
@@ -32,14 +45,49 @@ def _house_segments(text: str) -> dict[int, str]:
             )
         if not m:
             continue
-        starts[n] = m.start()
+        starts.append((n, m.start()))
         cursor = m.start() + 1
-    segments = {}
-    ordered = sorted(starts.items(), key=lambda kv: kv[1])
-    for i, (n, start) in enumerate(ordered):
-        end = ordered[i + 1][1] if i + 1 < len(ordered) else len(text)
-        segments[n] = text[start:end]
-    return segments
+    return starts
+
+
+def _house_starts(text: str) -> list[tuple[int, int]]:
+    """v16: οι πραγματικές επικεφαλίδες των Οίκων.
+
+    Αν πριν από τους Οίκους υπάρχει λίστα «1ος Οίκος … 12ος Οίκος» (π.χ. πίνακας
+    ακμών ή περιεχόμενα), η απλή αναζήτηση θα «άνοιγε» όλους τους Οίκους μέσα σε
+    αυτήν και θα απέδιδε όλο το κείμενο στον 12ο. Αν λοιπόν ολόκληρη η πρώτη
+    ακολουθία τελειώνει πριν από νέα επικεφαλίδα 1ου Οίκου, και από εκεί
+    εντοπίζονται τουλάχιστον τόσοι Οίκοι, ισχύει η δεύτερη ακολουθία."""
+    best = _scan_house_starts(text, 0)
+    if not best:
+        return best
+    # Μόνο όταν ΟΛΗ η πρώτη ακολουθία τελειώνει πριν από μια νέα επικεφαλίδα 1ου
+    # Οίκου πρόκειται για λίστα στην αρχή· μια γραμμή πίνακα «1ος Οίκος | …» μέσα
+    # στον 1ο Οίκο δεν αλλάζει τίποτα.
+    for m in _HOUSE_HEADING_PATTERNS[0].finditer(text, best[-1][1] + 1):
+        candidate = _scan_house_starts(text, m.start())
+        if candidate and candidate[0][0] == 1 and len(candidate) >= len(best):
+            return candidate
+    return best
+
+
+def _tail_start(text: str, last_house_start: int) -> int:
+    """Πού τελειώνει ο 12ος Οίκος: στην πρώτη τελική ενότητα μετά από αυτόν."""
+    found = [m.start() for m in (_TAIL_HEADING.search(text, last_house_start + 1),
+                                 _TAIL_ANYWHERE.search(text, last_house_start + 1)) if m]
+    return min(found) if found else len(text)
+
+
+def _house_segments(text: str) -> dict[int, str]:
+    """Εντοπίζει το τμήμα κειμένου κάθε Οίκου (από την επικεφαλίδα του μέχρι
+    την επόμενη), με αναζήτηση με σειρά 1..12 ώστε να μην μπερδεύονται
+    αριθμοί Οίκων που αναφέρονται εν παρόδω αλλού στο κείμενο.
+
+    v16: ο τελευταίος Οίκος τελειώνει πριν από τις τελικές ενότητες (Τελική
+    συνθετική εικόνα, Συμβολική κατεύθυνση εξέλιξης κ.λπ.)· πριν, έφτανε ως το
+    τέλος του κειμένου και π.χ. οι κυβερνήτες του Βόρειου Δεσμού διαβάζονταν ως
+    κυβερνήτες του 12ου Οίκου."""
+    return {n: text[st:en] for n, st, en in _segments_bounds(text)}
 
 
 def _ruler_names_in_body(segment: str) -> list[str]:
@@ -129,21 +177,10 @@ def _claim_context(text: str, start: int, end: int, segments_bounds) -> str:
 def _segments_bounds(text: str):
     """(Οίκος, αρχή, τέλος) κάθε ενότητας Οίκου. Ο 12ος τελειώνει πριν από
     τις τελικές ενότητες, αν αυτές εντοπίζονται."""
-    starts = []
-    cursor = 0
-    for n in range(1, 13):
-        m = _HOUSE_HEADING_PATTERNS[n - 1].search(text, cursor)
-        if not m:
-            m = _HOUSE_PATTERNS[n - 1].search(text, cursor) or _HOUSE_PATTERNS_ALT[n - 1].search(
-                text, cursor
-            )
-        if m:
-            starts.append((n, m.start()))
-            cursor = m.start() + 1
-    final = re.compile(r"Τελική συνθετική εικόνα|Final\s+synthesis").search(
-        text, starts[-1][1] if starts else 0
-    )
-    tail_end = final.start() if final else len(text)
+    starts = sorted(_house_starts(text), key=lambda kv: kv[1])
+    if not starts:
+        return []
+    tail_end = _tail_start(text, starts[-1][1])
     bounds = []
     for i, (n, st) in enumerate(starts):
         en = starts[i + 1][1] if i + 1 < len(starts) else tail_end

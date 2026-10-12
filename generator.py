@@ -11,7 +11,13 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 DEFAULT_MODEL = "gpt-5.4"
-DEFAULT_MAX_ROUNDS = 3  # 1 δημιουργία + έως 2 διορθώσεις (όριο κόστους)
+# v16: ο κύκλος συνεχίζει ΜΕΧΡΙ ΝΑ ΕΓΚΡΙΘΕΙ το κείμενο. Η προεπιλογή είναι ένα
+# πολύ υψηλό δίχτυ ασφαλείας (κόστος/χρόνος), μόνο για την περίπτωση που ο
+# έλεγχος απορρίπτει λανθασμένα κάτι που το μοντέλο δεν μπορεί να διορθώσει.
+# Secrets: AUTO_MAX_ROUNDS = αριθμός (1–100) ή 0 = χωρίς κανένα όριο.
+DEFAULT_MAX_ROUNDS = 30
+MAX_ROUNDS_LIMIT = 100
+UNLIMITED = 0
 REQUEST_TIMEOUT = 900  # δευτερόλεπτα ανά κλήση (μεγάλο κείμενο 12 Οίκων)
 
 REVISION_TEMPLATE = """Ακολουθεί η δεσμευτική εντολή, η ανάλυση που παρήγαγες και τα σφάλματα που εντόπισε ο μηχανικός έλεγχος του AstroCheck Pro.
@@ -88,6 +94,17 @@ def completer(provider: str) -> Callable[[str, str, str], str]:
     raise ValueError(f"Άγνωστος πάροχος: {provider}")
 
 
+def max_rounds_from(value) -> int:
+    """Όριο ασφαλείας γύρων από ρύθμιση (π.χ. Secrets). Άκυρη τιμή -> προεπιλογή."""
+    try:
+        n = int(str(value).strip())
+    except (TypeError, ValueError):
+        return DEFAULT_MAX_ROUNDS
+    if n == UNLIMITED:
+        return UNLIMITED
+    return max(1, min(MAX_ROUNDS_LIMIT, n))
+
+
 def generate_analysis(api_key: str, prompt: str, model: str = DEFAULT_MODEL) -> str:
     """Μία απλή δημιουργία, χωρίς έλεγχο (διατηρείται για συμβατότητα)."""
     return _openai_complete(api_key, prompt, model)
@@ -147,7 +164,9 @@ def generate_validated(
     best = None
     text = ""
     result = None
-    for n in range(1, max(1, max_rounds) + 1):
+    n = 0
+    while max_rounds == UNLIMITED or n < max(1, max_rounds):
+        n += 1
         if n == 1:
             text = complete(api_key, prompt, model)
             kind = "δημιουργία"
@@ -156,11 +175,18 @@ def generate_validated(
             # την τελευταία -- αν ένας γύρος χειροτέρεψε το κείμενο, δεν
             # χτίζουμε πάνω του.
             _, base_text, base_result = best
-            text = complete(
-                api_key,
-                revision_prompt(prompt, base_text, base_result.details_lines(), revision_template),
-                model,
-            )
+            try:
+                text = complete(
+                    api_key,
+                    revision_prompt(prompt, base_text, base_result.details_lines(), revision_template),
+                    model,
+                )
+            except Exception as exc:  # v16: ένα αποτυχημένο αίτημα δεν σταματά τον κύκλο
+                info = Round(n, "διόρθωση", False, best[0], f"Το αίτημα απέτυχε ({type(exc).__name__}) — νέα προσπάθεια.")
+                rounds.append(info)
+                if on_round:
+                    on_round(info)
+                continue
             kind = "διόρθωση"
         result = validate(text)
         errors = len(result.details_lines())
@@ -228,7 +254,9 @@ def build_rewrite_prompt(command_text: str, analysis_text: str, name: str, langu
         "=== ΜΟΡΦΗ ΠΑΡΑΔΟΣΗΣ ===",
         "Επέστρεψε ΜΟΝΟ το κείμενο του τελικού εντύπου, σε απλό κείμενο, χωρίς εισαγωγή, σχόλια ή "
         "αναφορά στον αυτοέλεγχο. Κάθε τίτλος Οίκου και κάθε τίτλος ενότητας σε δική του γραμμή. "
-        "Το Word δημιουργείται από την εφαρμογή.",
+        "Το Word δημιουργείται από την εφαρμογή. "
+        "Η όψη 150° γράφεται στο έντυπο μόνο ως «χιαστί όψη» (στα αγγλικά «quincunx»), χωρίς τον "
+        "αριθμό «150°», γιατί ο έλεγχος απορρίπτει κάθε μοίρα στο έντυπο του πελάτη (κανόνας 20).",
         "=== " + _SOURCE_HEADING.upper() + " ===",
         analysis_text.strip(),
     ]
