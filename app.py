@@ -7,8 +7,22 @@ from prompts import build_master_prompt
 from pipeline import STAGE_ANALYSIS, STAGE_REWRITE, run_full_pipeline
 from docx_builder import build_audit_docx, build_analysis_docx
 from generator import (
+    DEFAULT_EUR_PER_USD,
     DEFAULT_MAX_ROUNDS,
+    DEFAULT_STALL_ROUNDS,
+    MAX_CONSECUTIVE_FAILURES,
+    PermanentAPIError,
+    Usage,
+    price_for,
+    STOP_BUDGET,
+    STOP_FAILURES,
+    STOP_REVIEW,
+    STOP_ROUNDS,
+    STOP_STALLED,
+    cost_limit_from,
     max_rounds_from,
+    stall_rounds_from,
+    effort_from,
     DEFAULT_MODELS,
     PROVIDER_SETTINGS,
     PROVIDERS,
@@ -21,6 +35,10 @@ from reference_loader import (
     docx_text,
     load_default_references,
 )
+from content_review import KIND_ANALYSIS, KIND_REWRITE, REVIEW_EFFORT, review_model_for, with_content_review
+from progress import KEEP_PAGE_OPEN, ProgressTracker, TimingStore, range_text
+from progress import STAGE_ANALYSIS as P_ANALYSIS, STAGE_REWRITE as P_REWRITE
+import checkpoint as CP
 from validator import validate_analysis, validate_rewrite
 from case_state import fingerprint, forget_stale_results, handle_pdf_upload, reset_case_state
 from ui_texts import (
@@ -238,8 +256,176 @@ def _max_rounds() -> int:
     return max_rounds_from(DEFAULT_MAX_ROUNDS if value in (None, "") else value)
 
 
+def _effort() -> str:
+    """v17.1: επίπεδο προσπάθειας του Claude (Secrets: ANTHROPIC_EFFORT, προεπιλογή high)."""
+    return effort_from(_secret("ANTHROPIC_EFFORT"))
+
+
 def _cap_text(cap: int) -> str:
     return "χωρίς όριο γύρων" if cap == 0 else f"όριο ασφαλείας: {cap} γύροι"
+
+
+def _stall_rounds() -> int:
+    """v18: διακοπή όταν δεν υπάρχει πρόοδος (Secrets: AUTO_STALL_ROUNDS)."""
+    return stall_rounds_from(_secret("AUTO_STALL_ROUNDS") or DEFAULT_STALL_ROUNDS)
+
+
+def _max_cost():
+    """v18: προαιρετικό όριο κόστους ανά πελάτη σε $ (Secrets: AUTO_MAX_COST_USD)."""
+    return cost_limit_from(_secret("AUTO_MAX_COST_USD"))
+
+
+def _eur_rate() -> float:
+    try:
+        return float(_secret("EUR_PER_USD").replace(",", ".")) or DEFAULT_EUR_PER_USD
+    except ValueError:
+        return DEFAULT_EUR_PER_USD
+
+
+def _price_override():
+    """v19: τιμή για μοντέλο εκτός πίνακα (Secrets: PRICE_INPUT_PER_MTOK, PRICE_OUTPUT_PER_MTOK)."""
+    try:
+        inp = float(_secret("PRICE_INPUT_PER_MTOK").replace(",", "."))
+        out = float(_secret("PRICE_OUTPUT_PER_MTOK").replace(",", "."))
+    except ValueError:
+        return None
+    return (inp, out) if inp > 0 and out > 0 else None
+
+
+def _case_usage(model: str) -> Usage:
+    """v19: ΕΝΑΣ μετρητής ανά πελάτη, κοινός για την αυτόματη διαδικασία και τις
+    καρτέλες 2 και 3. v19.6: δένεται με τον χάρτη, ώστε να ΜΗΝ μηδενίζεται όταν
+    ξαναδιαβάζεται το ίδιο PDF (μαζί με τη μισοτελειωμένη εργασία)· μηδενίζεται
+    με «Νέα ανάλυση» ή με PDF άλλου χάρτη."""
+    chart = st.session_state.get("chart")
+    key = _chart_key(chart) if chart is not None else ""
+    slot = st.session_state.get("case_usage")
+    if not isinstance(slot, dict) or slot.get("key") != key:
+        slot = {"key": key, "usage": Usage(model=model)}
+        st.session_state.case_usage = slot
+    usage = slot["usage"]
+    usage.model = model
+    usage.price_override = _price_override()
+    return usage
+
+
+def _review_on() -> bool:
+    """v19: έλεγχος περιεχομένου με ΤΝ (Secrets: CONTENT_REVIEW = off για απενεργοποίηση)."""
+    return _secret("CONTENT_REVIEW").lower() not in ("off", "0", "false", "όχι")
+
+
+def _with_review(validate, provider, api, model, kind, source=""):
+    if not _review_on():
+        return validate
+    return with_content_review(
+        validate,
+        completer(provider, REVIEW_EFFORT),
+        api,
+        review_model_for(provider, model, _secret("REVIEW_MODEL")),
+        kind,
+        source,
+        _case_usage(model),
+        _max_cost(),
+    )
+
+
+def _cost_limit_warning(model: str) -> None:
+    if _max_cost() and price_for(model, _price_override()) is None:
+        st.warning(
+            f"Το όριο κόστους δεν μπορεί να εφαρμοστεί: δεν υπάρχει τιμή για το μοντέλο {model}. "
+            "Όρισε PRICE_INPUT_PER_MTOK και PRICE_OUTPUT_PER_MTOK στα Secrets."
+        )
+
+
+def _limits_text(cap: int) -> str:
+    text = f"{_cap_text(cap)}· διακοπή αν δεν υπάρξει πρόοδος για {_stall_rounds()} γύρους"
+    cost = _max_cost()
+    if cost:
+        text += f"· όριο κόστους {cost:.2f} $".replace(".", ",")
+    return text
+
+
+def _stop_text(reason, cap: int) -> str:
+    """Εξήγηση στα ελληνικά για το γιατί σταμάτησε ο κύκλος χωρίς να περάσει."""
+    if reason == STOP_STALLED:
+        return (
+            f"σταμάτησε επειδή για {_stall_rounds()} συνεχόμενους γύρους τα σφάλματα δεν μειώθηκαν "
+            "(στασιμότητα) — κρατήθηκε η καλύτερη απόπειρα. Δες τα σφάλματα παρακάτω· μπορείς να "
+            "πατήσεις ξανά για νέα προσπάθεια."
+        )
+    if reason == STOP_BUDGET:
+        return "σταμάτησε επειδή έφτασε το όριο κόστους (AUTO_MAX_COST_USD) — κρατήθηκε η καλύτερη απόπειρα."
+    if reason == STOP_REVIEW:
+        return (
+            "πέρασε τους ελέγχους δεδομένων και δομής, αλλά ο έλεγχος περιεχομένου με ΤΝ δεν ολοκληρώθηκε, "
+            "οπότε το κείμενο ΔΕΝ θεωρείται ελεγμένο. Πάτα ξανά σε λίγο για νέα προσπάθεια."
+        )
+    if reason == STOP_FAILURES:
+        return (
+            f"σταμάτησε μετά από {MAX_CONSECUTIVE_FAILURES} αποτυχημένα αιτήματα στη σειρά "
+            "(δίκτυο ή υπερφόρτωση του παρόχου) — δοκίμασε ξανά σε λίγο."
+        )
+    return f"δεν πέρασε τους ελέγχους ούτε μετά από {cap} γύρους (όριο ασφαλείας) — δες τα σφάλματα παρακάτω."
+
+
+def _analysis_resume_text(sig: str = "") -> str:
+    """v19.5: καρτέλα 2 — συνέχεια από την καλύτερη αυτόματη απόπειρα που δεν
+    πέρασε. v19.6: μόνο αν προήλθε από τις ΙΔΙΕΣ ρυθμίσεις (γλώσσα, οδηγίες, απόρρητο)."""
+    v = st.session_state.get("validation")
+    if (
+        st.session_state.get("analysis_source") == "api"
+        and st.session_state.get("analysis")
+        and v is not None
+        and not v.ok
+        and st.session_state.get("analysis_sig") == sig
+    ):
+        return st.session_state.analysis
+    return ""
+
+
+def _rewrite_resume_text(analysis_text: str, sig: str = "") -> str:
+    """v19.5: καρτέλα 3 — συνέχεια μόνο αν το έντυπο προήλθε από την ΙΔΙΑ ανάλυση."""
+    v = st.session_state.get("rewrite_validation")
+    if (
+        st.session_state.get("rewrite_source") == "api"
+        and st.session_state.get("rewrite_text")
+        and st.session_state.get("rewrite_analysis_hash") == fingerprint(analysis_text)
+        and v is not None
+        and not v.ok
+        and st.session_state.get("rewrite_sig") == sig
+    ):
+        return st.session_state.rewrite_text
+    return ""
+
+
+def _progress_panel(stages):
+    """v19.4: μήνυμα «μην κλείσεις τη σελίδα», μπάρα προόδου ανά στάδιο και
+    εκτίμηση χρόνου που απομένει. Επιστρέφει (tracker, ενημέρωση(στάδιο, γύρος))."""
+    store = TimingStore()
+    st.warning(KEEP_PAGE_OPEN)
+    tracker = ProgressTracker(store, tuple(stages))
+    st.caption(f"{range_text(store, tuple(stages))}. Η εκτίμηση γίνεται πιο ακριβής με κάθε ανάλυση.")
+    bar = st.progress(0.02, text=tracker.label())
+
+    def update(stage, rnd):
+        tracker.on_round(stage, rnd)
+        bar.progress(tracker.fraction(), text=tracker.label())
+
+    def finish():
+        tracker.finish()
+        bar.progress(1.0, text="Ολοκληρώθηκε.")
+
+    return update, finish
+
+
+def _show_api_error(e: Exception, provider: str) -> None:
+    if isinstance(e, PermanentAPIError):
+        st.error(f"Η διαδικασία σταμάτησε αμέσως: {e} (Δεν έγιναν άσκοπες επαναλήψεις.)")
+    else:
+        st.error(f"Η δημιουργία απέτυχε. Έλεγξε το κλειδί {provider} και δοκίμασε ξανά.")
+    cause = e.__cause__ or e
+    with st.expander("Τεχνική λεπτομέρεια"):
+        st.code(f"{type(cause).__name__}: {str(cause)[:300]}")
 
 
 def _api_choice(scope: str):
@@ -328,15 +514,81 @@ with st.sidebar:
         st.session_state.chart = None
         st.session_state.uploader_gen += 1  # αναγκάζει τους file_uploader να ξαναγίνουν "άδειοι"
         reset_case_state()
+        st.session_state.pop("checkpoint", None)  # v19.5: και η μισοτελειωμένη εργασία
+        st.session_state.pop("case_usage", None)  # v19.6: και ο μετρητής κόστους του πελάτη
         st.rerun()
 
 REWRITE_COMMAND_PATH = Path(__file__).resolve().parent / "Desmeftiki_Entoli_Telikis_Anadiatyposis_v9.docx"
 
 
-def _run_full_pipeline_ui(provider, api, model, language, instructions_upload, style_upload) -> None:
+def _chart_key(chart) -> str:
+    return CP.chart_key(chart)
+
+
+analysis_signature = CP.analysis_signature
+rewrite_signature = CP.rewrite_signature
+
+
+def _checkpoint():
+    """v19.5–19.6: η πρόοδος για τον ΤΡΕΧΟΝΤΑ χάρτη (μόνο στη συνεδρία· βλ. checkpoint.py)."""
+    cp = st.session_state.get("checkpoint")
+    chart = st.session_state.get("chart")
+    if not cp or chart is None or cp.get("key") != _chart_key(chart):
+        return None
+    return cp
+
+
+def _checkpoint_update(stage: str, text: str, ok: bool, analysis_sig: str, final_sig: str) -> None:
+    chart = st.session_state.get("chart")
+    if chart is None:
+        return
+    st.session_state.checkpoint = CP.update(
+        st.session_state.get("checkpoint"), _chart_key(chart), stage, text, ok, analysis_sig, final_sig
+    )
+
+
+def _resume_texts(analysis_sig: str, final_sig: str):
+    chart = st.session_state.get("chart")
+    if chart is None:
+        return "", ""
+    return CP.resume_texts(st.session_state.get("checkpoint"), _chart_key(chart), analysis_sig, final_sig)
+
+
+def _resumable() -> bool:
+    chart = st.session_state.get("chart")
+    return chart is not None and CP.resumable(st.session_state.get("checkpoint"), _chart_key(chart))
+
+
+def _store_pipeline_result(result, chart_shared, analysis_sig: str = "", final_sig: str = "") -> None:
+    """Τα αποτελέσματα στα ΙΔΙΑ κλειδιά με τις καρτέλες 2 και 3.
+    v19.7: κάθε υπογραφή ρυθμίσεων αποθηκεύεται ΜΟΝΟ μαζί με το κείμενο που
+    πραγματικά δημιουργήθηκε με αυτές -- ποτέ πριν (ένα παλιό κείμενο δεν
+    «αποκτά» νέες ρυθμίσεις αν η νέα εκτέλεση αποτύχει πριν γράψει κάτι)."""
+    if result.analysis_text:
+        st.session_state.analysis_sig = analysis_sig
+        st.session_state.analysis = result.analysis_text
+        st.session_state.validation = result.analysis_validation
+        st.session_state.analysis_source = "api"
+        st.session_state.analysis_docx_bytes = None
+        st.session_state.analysis_docx_name = ""
+    if result.final_text:
+        st.session_state.rewrite_sig = final_sig
+        st.session_state.rewrite_validation = result.final_validation
+        st.session_state.rewrite_docx_bytes = build_analysis_docx(chart_shared.name, result.final_text)
+        st.session_state.rewrite_docx_name = "Teliki_Analysi.docx"
+        st.session_state.rewrite_docx_hash = None
+        st.session_state.rewrite_analysis_hash = fingerprint(result.analysis_text)
+        st.session_state.rewrite_source = "api"
+        st.session_state.rewrite_text = result.final_text
+    cp = _checkpoint()
+    if cp is not None and getattr(result, "ok", False):
+        cp["done"] = True
+
+
+def _run_full_pipeline_ui(provider, api, model, language, instructions_upload, style_upload, fresh=False) -> None:
     """v17: ανάλυση → έλεγχος → τελικό έντυπο → έλεγχος, με ενημέρωση ανά γύρο.
-    Τα αποτελέσματα αποθηκεύονται στα ΙΔΙΑ κλειδιά με τις καρτέλες 2 και 3, ώστε
-    να φαίνονται και εκεί."""
+    v19.5: αν υπάρχει διακοπείσα εκτέλεση για τον ίδιο χάρτη, ΣΥΝΕΧΙΖΕΙ από εκεί
+    (εκτός αν ζητηθεί `fresh`)."""
     chart_shared = _shared_chart(st.session_state.chart)
     personal = {"Όνομα": chart_shared.name}
     ins_text = docx_text(instructions_upload.getvalue()) if instructions_upload else default_instructions_text
@@ -344,12 +596,27 @@ def _run_full_pipeline_ui(provider, api, model, language, instructions_upload, s
     ins_name = instructions_upload.name if instructions_upload else "Ενσωματωμένες οδηγίες v6"
     sty_name = style_upload.name if style_upload else "Ενσωματωμένος καθαρός οδηγός ύφους"
     st.session_state.language = language
-    with st.status("Πλήρης αυτόματη διαδικασία σε εξέλιξη…", expanded=True) as status:
+    command_text = docx_text(REWRITE_COMMAND_PATH.read_bytes())
+    a_sig = analysis_signature(language, ins_text, sty_text, chart_shared)
+    f_sig = rewrite_signature(a_sig, language, command_text)
+    if fresh:
+        st.session_state.pop("checkpoint", None)
+    resume_a, resume_f = _resume_texts(a_sig, f_sig)
+    if resume_a:
+        st.info("▶️ Συνέχεια από εκεί που είχε σταματήσει — δεν ξαναγράφεται η ανάλυση από την αρχή.")
+    elif _resumable() and not fresh:
+        st.info(
+            "Οι ρυθμίσεις άλλαξαν από την προηγούμενη προσπάθεια (γλώσσα, οδηγίες ή επιλογές απορρήτου), "
+            "οπότε η ανάλυση γράφεται από την αρχή με τις νέες ρυθμίσεις."
+        )
+    progress_update, progress_finish = _progress_panel((P_ANALYSIS, P_REWRITE))
+    with st.status("Λεπτομέρειες γύρων", expanded=False) as status:
 
         def _on_round(stage, r):
+            progress_update(stage, r)
             status.write(
                 f"{'✓' if r.ok else '✗'} {stage} — γύρος {r.number} ({r.kind}): "
-                + ("εγκρίθηκε." if r.ok else f"{r.error_count} σφάλματα — διορθώνεται…")
+                + (r.summary if r.kind == "γύρος ποιότητας" else "πέρασε τους ελέγχους." if r.ok else f"{r.error_count} σφάλματα — διορθώνεται…")
             )
 
         try:
@@ -361,41 +628,55 @@ def _run_full_pipeline_ui(provider, api, model, language, instructions_upload, s
                 style_text=sty_text,
                 instructions_name=ins_name,
                 style_name=sty_name,
-                rewrite_command_text=docx_text(REWRITE_COMMAND_PATH.read_bytes()),
+                rewrite_command_text=command_text,
                 api_key=api,
                 provider=provider,
                 model=model,
                 max_rounds=_max_rounds(),
+                effort=_effort(),
+                stall_rounds=_stall_rounds(),
+                max_cost_usd=_max_cost(),
                 on_round=_on_round,
+                usage=_case_usage(model),
+                content_review=_review_on(),
+                review_model=_secret("REVIEW_MODEL"),
+                resume_analysis=resume_a,
+                resume_final=resume_f,
+                on_progress=lambda stage, text, ok: _checkpoint_update(stage, text, ok, a_sig, f_sig),
             )
         except Exception as e:
+            progress_finish()
             status.update(label="Η αυτόματη διαδικασία διακόπηκε.", state="error")
-            st.session_state.auto_result = {"error": f"{type(e).__name__}: {str(e)[:300]}", "provider": provider}
+            partial = getattr(e, "result", None)
+            if partial is not None:
+                _store_pipeline_result(partial, chart_shared, a_sig, f_sig)  # η πρόοδος ΔΕΝ χάνεται
+            cause = e.__cause__ or e
+            st.session_state.auto_result = {
+                "error": f"{type(cause).__name__}: {str(cause)[:300]}",
+                "permanent": str(e) if isinstance(e, PermanentAPIError) else "",
+                "provider": provider,
+                "saved": _resumable(),
+                "name": chart_shared.name,
+            }
             return
-        # ίδια κλειδιά με τις καρτέλες 2 και 3
-        st.session_state.analysis = result.analysis_text
-        st.session_state.validation = result.analysis_validation
-        st.session_state.analysis_source = "api"
-        st.session_state.analysis_docx_bytes = None
-        st.session_state.analysis_docx_name = ""
-        if result.final_text:
-            st.session_state.rewrite_validation = result.final_validation
-            st.session_state.rewrite_docx_bytes = build_analysis_docx(chart_shared.name, result.final_text)
-            st.session_state.rewrite_docx_name = "Teliki_Analysi.docx"
-            st.session_state.rewrite_docx_hash = None
-            st.session_state.rewrite_analysis_hash = fingerprint(result.analysis_text)
-            st.session_state.rewrite_source = "api"
+        progress_finish()
+        _store_pipeline_result(result, chart_shared, a_sig, f_sig)
         st.session_state.auto_result = {
             "ok": result.ok,
             "stopped_at": result.stopped_at,
             "analysis_rounds": len(result.analysis_rounds),
             "final_rounds": len(result.final_rounds),
             "name": chart_shared.name,
+            "stop_reason": result.stop_reason,
+            "cap": _max_rounds(),
+            "usage": result.usage.describe(_eur_rate()) if result.usage else "",
+            "review": _review_on(),
+            "saved": _resumable(),
         }
         status.update(
-            label="✓ Ολοκληρώθηκε: εγκρίθηκαν και η ανάλυση και το τελικό έντυπο."
+            label="✓ Ολοκληρώθηκε: η ανάλυση και το τελικό έντυπο πέρασαν τους ελέγχους δεδομένων, δομής και ασφαλούς γλώσσας."
             if result.ok
-            else f"Η διαδικασία σταμάτησε στο στάδιο «{result.stopped_at}» χωρίς έγκριση.",
+            else f"Η διαδικασία σταμάτησε στο στάδιο «{result.stopped_at}» χωρίς να περάσει τους ελέγχους.",
             state="complete" if result.ok else "error",
         )
 
@@ -408,13 +689,24 @@ def _auto_result_panel() -> None:
     with st.container(border=True):
         st.markdown("#### Αποτέλεσμα αυτόματης διαδικασίας")
         if res.get("error"):
-            st.error(f"Η αυτόματη διαδικασία διακόπηκε. Έλεγξε το κλειδί {res.get('provider')} και δοκίμασε ξανά.")
+            if res.get("permanent"):
+                st.error(f"Η αυτόματη διαδικασία σταμάτησε αμέσως: {res['permanent']}")
+            else:
+                st.error(f"Η αυτόματη διαδικασία διακόπηκε. Έλεγξε το κλειδί {res.get('provider')} και δοκίμασε ξανά.")
             st.caption("Τεχνική λεπτομέρεια: " + res["error"])
+            if res.get("saved"):
+                st.info(
+                    "💾 Η πρόοδος κρατήθηκε. Διόρθωσε την αιτία (π.χ. πρόσθεσε υπόλοιπο στο Claude Console) "
+                    "και πάτα «▶️ Συνέχεια από εκεί που σταμάτησε» — δεν ξεκινά από την αρχή. "
+                    "Μην κλείσεις τη σελίδα, γιατί η πρόοδος υπάρχει μόνο σε αυτή τη συνεδρία."
+                )
             return
+        if res.get("usage"):
+            st.caption("💶 Κατανάλωση αυτού του πελάτη: " + res["usage"])
         analysis_ok = bool(st.session_state.validation and st.session_state.validation.ok)
         final = st.session_state.get("rewrite_validation")
         if analysis_ok:
-            st.success(f"✓ Η ανάλυση εγκρίθηκε ({res['analysis_rounds']} γύροι).")
+            st.success(f"✓ Η ανάλυση πέρασε τους ελέγχους δεδομένων, δομής και ασφαλούς γλώσσας ({res['analysis_rounds']} γύροι).")
             st.download_button(
                 "⬇️ Λήψη ελεγμένης πλήρους ανάλυσης (Word)",
                 build_analysis_docx(res["name"], st.session_state.analysis),
@@ -423,7 +715,7 @@ def _auto_result_panel() -> None:
                 key="auto_download_analysis",
             )
         if final is not None and final.ok and st.session_state.get("rewrite_docx_bytes"):
-            st.success(f"✓ Το τελικό έντυπο του πελάτη εγκρίθηκε ({res['final_rounds']} γύροι).")
+            st.success(f"✓ Το τελικό έντυπο του πελάτη πέρασε τους ελέγχους δεδομένων, δομής και ασφαλούς γλώσσας ({res['final_rounds']} γύροι).")
             for note in getattr(final, "warnings", []):
                 st.warning(note)
             st.download_button(
@@ -438,8 +730,13 @@ def _auto_result_panel() -> None:
         if res.get("stopped_at"):
             failed = st.session_state.validation if res["stopped_at"] == STAGE_ANALYSIS else final
             st.error(
-                f"Το στάδιο «{res['stopped_at']}» δεν εγκρίθηκε μετά από όλους τους γύρους. "
-                "Δες τα σφάλματα παρακάτω· μπορείς να συνεχίσεις από την αντίστοιχη καρτέλα."
+                f"Το στάδιο «{res['stopped_at']}» "
+                + _stop_text(res.get("stop_reason"), res.get("cap", _max_rounds()))
+                + (
+                    " Η πρόοδος κρατήθηκε: πάτα «▶️ Συνέχεια από εκεί που σταμάτησε»."
+                    if res.get("saved")
+                    else " Μπορείς να συνεχίσεις από την αντίστοιχη καρτέλα."
+                )
             )
             if failed is not None:
                 with st.expander("Σφάλματα", expanded=True):
@@ -485,7 +782,7 @@ with tab1:
             value=True,
             key="auto_full",
             help="Μετά την ανάγνωση του PDF, η εφαρμογή δημιουργεί την ανάλυση, την ελέγχει, γράφει "
-            "το τελικό έντυπο του πελάτη και το ελέγχει — με διόρθωση μέχρι να εγκριθεί το καθένα.",
+            "το τελικό έντυπο του πελάτη και το ελέγχει — με διόρθωση μέχρι να περάσει τους ελέγχους το καθένα.",
         )
         if auto_full:
             auto_provider, auto_api, auto_model = _api_choice("full")
@@ -494,11 +791,12 @@ with tab1:
             )
             st.caption(
                 "Μετά το «Ανάγνωση και έλεγχος PDF» όλα γίνονται αυτόματα: ανάλυση → έλεγχος → "
-                f"τελικό έντυπο → έλεγχος, μέχρι να εγκριθεί το καθένα ({_cap_text(_max_rounds())}). "
-                "Μπορεί να διαρκέσει αρκετά λεπτά· μην κλείσεις τη σελίδα."
+                f"τελικό έντυπο → έλεγχος, μέχρι να περάσει τους ελέγχους το καθένα ({_limits_text(_max_rounds())}). "
+                f"{range_text(TimingStore())}· **μην κλείσεις και μην ανανεώσεις τη σελίδα** μέχρι να τελειώσει."
             )
             if not auto_api:
                 st.warning("Για την αυτόματη διαδικασία χρειάζεται κλειδί API (ή όρισέ το στα Secrets).")
+            _cost_limit_warning(auto_model)
     if pdf and st.button("Ανάγνωση και έλεγχος PDF", type="primary", width="stretch"):
         with st.spinner("Διαβάζεται το PDF…"):
             ok, new_chart, err = handle_pdf_upload(pdf.getvalue(), pdf.name)
@@ -538,6 +836,30 @@ with tab1:
     if st.session_state.chart:
         _privacy_panel(st.session_state.chart)
     _auto_result_panel()
+    if st.session_state.chart is not None and _resumable():
+        with st.container(border=True):
+            st.markdown("#### 💾 Υπάρχει μισοτελειωμένη εργασία για αυτόν τον χάρτη")
+            st.caption(
+                "Η διαδικασία είχε σταματήσει. Η «Συνέχεια» ξεκινά από το καλύτερο κείμενο που είχε γραφτεί "
+                "(και, αν η ανάλυση είχε περάσει, από το τελικό έντυπο), χωρίς να πληρώσεις ξανά τη δημιουργία από την αρχή."
+            )
+            _cp = _checkpoint()
+            st.download_button(
+                "⬇️ Λήψη προσχεδίου ανάλυσης (για ασφάλεια)",
+                build_analysis_docx(st.session_state.chart.name, _cp["analysis"]),
+                file_name="Prosxedio_Analysis.docx",
+                width="stretch",
+                key="draft_download",
+            )
+            if auto_full and auto_api:
+                if st.button("▶️ Συνέχεια από εκεί που σταμάτησε", type="primary", width="stretch", key="resume_run"):
+                    _run_full_pipeline_ui(auto_provider, auto_api, auto_model, auto_language, instructions, style)
+                    st.rerun()
+                if st.button("Ξεκίνα από την αρχή (νέα ανάλυση για τον ίδιο χάρτη)", width="stretch", key="fresh_run"):
+                    _run_full_pipeline_ui(auto_provider, auto_api, auto_model, auto_language, instructions, style, fresh=True)
+                    st.rerun()
+            else:
+                st.caption("Για να συνεχίσεις, ενεργοποίησε την πλήρη αυτόματη διαδικασία και όρισε κλειδί API παραπάνω.")
 
 instructions_text = (
     docx_text(instructions.getvalue()) if instructions else default_instructions_text
@@ -606,8 +928,8 @@ with tab4:
                 provider, api, model = _api_choice("analysis")
                 rounds_cap = _max_rounds()
                 st.caption(
-                    "Η ανάλυση ελέγχεται αυτόματα και, αν δεν εγκριθεί, διορθώνεται ξανά και ξανά "
-                    f"μέχρι να εγκριθεί ({_cap_text(rounds_cap)})."
+                    "Η ανάλυση ελέγχεται αυτόματα και, αν δεν περάσει, διορθώνεται ξανά και ξανά "
+                    f"μέχρι να περάσει τους ελέγχους ({_limits_text(rounds_cap)})."
                 )
                 if st.button(
                     "Δημιουργία πλήρους ανάλυσης",
@@ -615,11 +937,14 @@ with tab4:
                     disabled=not ready or not api,
                     width="stretch",
                 ):
+                    a_progress, a_finish = _progress_panel((P_ANALYSIS,))
+                    _a_sig = analysis_signature(language, instructions_text, style_text, chart)
                     with st.status(
-                        "Δημιουργείται η ανάλυση των 12 Οίκων…", expanded=True
+                        "Λεπτομέρειες γύρων", expanded=False
                     ) as status:
 
                         def _on_round(r):
+                            a_progress(P_ANALYSIS, r)
                             icon = "✓" if r.ok else "✗"
                             status.write(
                                 f"{icon} Γύρος {r.number} ({r.kind}): "
@@ -639,12 +964,20 @@ with tab4:
                             outcome = generate_validated(
                                 api,
                                 prompt,
-                                validate=lambda t: validate_analysis(chart, t, personal),
+                                validate=_with_review(
+                                    lambda t: validate_analysis(chart, t, personal), provider, api, model, KIND_ANALYSIS
+                                ),
                                 model=model,
                                 max_rounds=rounds_cap,
+                                usage=_case_usage(model),
                                 on_round=_on_round,
-                                complete=completer(provider),
+                                complete=completer(provider, _effort()),
+                                stall_rounds=_stall_rounds(),
+                                max_cost_usd=_max_cost(),
+                                start_text=_analysis_resume_text(_a_sig),
                             )
+                            a_finish()
+                            st.session_state.analysis_sig = _a_sig
                             st.session_state.analysis = outcome.text
                             st.session_state.analysis_docx_bytes = None
                             st.session_state.analysis_docx_name = ""
@@ -652,20 +985,26 @@ with tab4:
                             st.session_state.analysis_source = "api"
                             status.update(
                                 label=(
-                                    "✓ Η ανάλυση πέρασε τον έλεγχο."
+                                    "✓ Η ανάλυση πέρασε τους ελέγχους δεδομένων, δομής και ασφαλούς γλώσσας."
                                     if outcome.ok
-                                    else f"Η ανάλυση δεν εγκρίθηκε ούτε μετά από {rounds_cap} γύρους (όριο ασφαλείας) — δες τα σφάλματα παρακάτω και πάτησε ξανά για νέα προσπάθεια."
+                                    else "Η ανάλυση " + _stop_text(outcome.stop_reason, rounds_cap)
                                 ),
                                 state="complete" if outcome.ok else "error",
                                 expanded=not outcome.ok,
                             )
+                            if outcome.usage:
+                                st.caption("💶 Κατανάλωση πελάτη ως τώρα: " + outcome.usage.describe(_eur_rate()))
                         except Exception as e:
+                            a_finish()
+                            partial = getattr(e, "partial", None)
+                            if partial is not None:  # v19.5: η πρόοδος δεν χάνεται
+                                st.session_state.analysis_sig = _a_sig
+                                st.session_state.analysis = partial.text
+                                st.session_state.validation = partial.validation
+                                st.session_state.analysis_source = "api"
+                                st.info("💾 Η πρόοδος κρατήθηκε· πάτα ξανά «Δημιουργία πλήρους ανάλυσης» για συνέχεια από εκεί.")
                             status.update(label="Η δημιουργία απέτυχε.", state="error")
-                            st.error(
-                                f"Η δημιουργία απέτυχε. Έλεγξε το κλειδί {provider} και δοκίμασε ξανά."
-                            )
-                            with st.expander("Τεχνική λεπτομέρεια"):
-                                st.code(str(e))
+                            _show_api_error(e, provider)
                 _analysis_result_panel("api", chart.name)
                 if not ready:
                     st.caption("Κλειδωμένο μέχρι να ολοκληρωθεί η λίστα ελέγχου παραπάνω.")
@@ -771,7 +1110,7 @@ with tab6:
             rw_rounds_cap = _max_rounds()
             st.caption(
                 "Στέλνεται η Δεσμευτική Εντολή μαζί με την ελεγμένη ανάλυση. Το τελικό έντυπο ελέγχεται "
-                f"αυτόματα και, αν δεν εγκριθεί, διορθώνεται ξανά μέχρι να εγκριθεί ({_cap_text(rw_rounds_cap)}). "
+                f"αυτόματα και, αν δεν περάσει, διορθώνεται ξανά μέχρι να περάσει τους ελέγχους ({_limits_text(rw_rounds_cap)}). "
                 "Ο έλεγχος δεν κρίνει αν διατηρήθηκε όλο το νόημα· διάβασε το έντυπο πριν το παραδώσεις."
             )
             if st.button(
@@ -780,12 +1119,19 @@ with tab6:
                 disabled=not rw_api or not rewrite_command_path.exists(),
                 width="stretch",
             ):
-                with st.status("Γράφεται το τελικό έντυπο…", expanded=True) as rw_status:
+                r_progress, r_finish = _progress_panel((P_REWRITE,))
+                _r_sig = rewrite_signature(
+                    st.session_state.get("analysis_sig", ""),
+                    st.session_state.get("language"),
+                    docx_text(rewrite_command_path.read_bytes()),
+                )
+                with st.status("Λεπτομέρειες γύρων", expanded=False) as rw_status:
 
                     def _on_rewrite_round(r):
+                        r_progress(P_REWRITE, r)
                         rw_status.write(
                             f"{'✓' if r.ok else '✗'} Γύρος {r.number} ({r.kind}): "
-                            + ("πέρασε τον έλεγχο." if r.ok else f"{r.error_count} σφάλματα.")
+                            + (r.summary if r.kind == "γύρος ποιότητας" else "πέρασε τον έλεγχο." if r.ok else f"{r.error_count} σφάλματα.")
                         )
 
                     try:
@@ -800,14 +1146,25 @@ with tab6:
                         rw_outcome = generate_validated(
                             rw_api,
                             rw_prompt,
-                            validate=lambda t: validate_rewrite(chart, _analysis_text, t, personal),
+                            validate=_with_review(
+                                lambda t: validate_rewrite(chart, _analysis_text, t, personal),
+                                rw_provider, rw_api, rw_model, KIND_REWRITE, _analysis_text,
+                            ),
                             model=rw_model,
+                            usage=_case_usage(rw_model),
                             max_rounds=rw_rounds_cap,
                             on_round=_on_rewrite_round,
-                            complete=completer(rw_provider),
+                            complete=completer(rw_provider, _effort()),
                             revision_template=REWRITE_REVISION_TEMPLATE,
+                            polish=True,
+                            stall_rounds=_stall_rounds(),
+                            max_cost_usd=_max_cost(),
+                            start_text=_rewrite_resume_text(_analysis_text, _r_sig),
                         )
+                        r_finish()
                         st.session_state.rewrite_validation = rw_outcome.validation
+                        st.session_state.rewrite_sig = _r_sig
+                        st.session_state.rewrite_text = rw_outcome.text
                         st.session_state.rewrite_docx_bytes = build_analysis_docx(_name, rw_outcome.text)
                         st.session_state.rewrite_docx_name = "Teliki_Analysi.docx"
                         st.session_state.rewrite_docx_hash = None
@@ -815,17 +1172,29 @@ with tab6:
                         st.session_state.rewrite_source = "api"
                         rw_status.update(
                             label=(
-                                "✓ Το τελικό έντυπο πέρασε τον έλεγχο."
+                                "✓ Το τελικό έντυπο πέρασε τους ελέγχους δεδομένων, δομής και ασφαλούς γλώσσας."
                                 if rw_outcome.ok
-                                else f"Το τελικό έντυπο δεν εγκρίθηκε ούτε μετά από {rw_rounds_cap} γύρους (όριο ασφαλείας) — δες τα σφάλματα παρακάτω και πάτησε ξανά για νέα προσπάθεια."
+                                else "Το τελικό έντυπο " + _stop_text(rw_outcome.stop_reason, rw_rounds_cap)
                             ),
                             state="complete" if rw_outcome.ok else "error",
                             expanded=not rw_outcome.ok,
                         )
+                        if rw_outcome.usage:
+                            st.caption("💶 Κατανάλωση πελάτη ως τώρα: " + rw_outcome.usage.describe(_eur_rate()))
                     except Exception as e:
+                        r_finish()
+                        partial = getattr(e, "partial", None)
+                        if partial is not None:  # v19.5: η πρόοδος δεν χάνεται
+                            st.session_state.rewrite_validation = partial.validation
+                            st.session_state.rewrite_sig = _r_sig
+                            st.session_state.rewrite_text = partial.text
+                            st.session_state.rewrite_docx_bytes = build_analysis_docx(_name, partial.text)
+                            st.session_state.rewrite_docx_name = "Teliki_Analysi.docx"
+                            st.session_state.rewrite_analysis_hash = fingerprint(_analysis_text)
+                            st.session_state.rewrite_source = "api"
+                            st.info("💾 Η πρόοδος κρατήθηκε· πάτα ξανά «Δημιουργία τελικού εντύπου» για συνέχεια από εκεί.")
                         rw_status.update(label="Η αναδιατύπωση απέτυχε.", state="error")
-                        st.error(f"Η αναδιατύπωση απέτυχε. Έλεγξε το κλειδί {rw_provider} και δοκίμασε ξανά.")
-                        st.caption(f"Τεχνική λεπτομέρεια: {type(e).__name__}: {str(e)[:300]}")
+                        _show_api_error(e, rw_provider)
         st.markdown("**Ή ανέβασε έντυπο που έφτιαξες χειροκίνητα:**")
         rewritten = st.file_uploader(
             "Τελική αναδιατύπωση (.docx)",

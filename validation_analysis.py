@@ -27,6 +27,7 @@ from validation_aspects import (
     _stray_technical_values,
     _malformed_aspect_rows,
 )
+from validation_safety import repeated_analysis_text, thin_analysis_content, unsafe_claim_lines, unsafe_claims
 from validation_structure import (
     _box_ruler_text,
     _data_claim_errors,
@@ -69,13 +70,21 @@ class ValidationResult:
     malformed_aspect_rows: list = field(default_factory=list)  # (λόγος, γραμμή)
     # v14: λάθος μοίρες θέσης, ζώδιο ακμής, ανάδρομη/ορθόδρομη κίνηση
     wrong_data_claims: list = field(default_factory=list)  # (περιγραφή, πλαίσιο)
+    # v18: διαγνώσεις, βέβαιες προβλέψεις, απόλυτα επαγγελματικά συμπεράσματα
+    unsafe_claims: list = field(default_factory=list)  # (κατηγορία, πρόταση)
+    # v18: κενές ετικέτες σύνοψης ή Οίκος με ελάχιστη ερμηνεία
+    thin_content: list = field(default_factory=list)  # (Οίκος, περιγραφή)
+    # v19: ίδιο γενικόλογο κείμενο σε πολλούς Οίκους
+    repeated_text: list = field(default_factory=list)  # ([Οίκοι], δείγμα)
 
     def summary(self) -> str:
         if self.ok:
             return (
-                "✓ Ο μηχανικός έλεγχος πέρασε: όλα τα υποχρεωτικά στοιχεία εντοπίστηκαν, σε κάθε Οίκο "
-                "που έπρεπε, και συμφωνούν με τα ελεγμένα δεδομένα. Ελέγχεται η συνέπεια με τα "
-                "δεδομένα, όχι η ποιότητα της ερμηνείας."
+                "✓ Πέρασε τους ελέγχους δεδομένων, δομής και ασφαλούς γλώσσας: όλα τα υποχρεωτικά "
+                "στοιχεία εντοπίστηκαν, σε κάθε Οίκο που έπρεπε, συμφωνούν με τα ελεγμένα δεδομένα, "
+                "κάθε Οίκος έχει ουσιαστικό ερμηνευτικό κείμενο και δεν βρέθηκαν διαγνώσεις, βέβαιες "
+                "προβλέψεις ή απόλυτα επαγγελματικά συμπεράσματα. Δεν ελέγχεται μηχανικά η ποιότητα "
+                "της ερμηνείας — χρειάζεται η δική σου ανάγνωση."
             )
         parts = []
         if self.missing_houses:
@@ -142,6 +151,15 @@ class ValidationResult:
             parts.append(
                 f"{len(self.undeclared_aspects)} όψεις δηλώνονται στο κείμενο αλλά δεν υπάρχουν στον ελεγμένο χάρτη"
             )
+        if self.unsafe_claims:
+            parts.append(
+                f"{len(self.unsafe_claims)} μη ασφαλείς διατυπώσεις (διάγνωση, βέβαιη πρόβλεψη ή απόλυτο επαγγελματικό συμπέρασμα)"
+            )
+        if self.thin_content:
+            houses = sorted({n for n, _ in self.thin_content})
+            parts.append("Οίκοι χωρίς ουσιαστικό περιεχόμενο: " + ", ".join(map(str, houses)))
+        if self.repeated_text:
+            parts.append(f"{len(self.repeated_text)} επαναλήψεις ίδιου κειμένου σε διαφορετικούς Οίκους")
         return "Η ανάλυση δεν ολοκληρώθηκε: " + "· ".join(parts) + "."
 
     def details_lines(self) -> list[str]:
@@ -215,6 +233,15 @@ class ValidationResult:
                 f"Αναφορά σε όψη που δεν υπάρχει στον χάρτη — {a}–{b} ({t}). Το πρόγραμμα διάβασε: "
                 f"«{t}» ανάμεσα σε {a} και {b}· στα ελεγμένα δεδομένα δεν υπάρχει καμία όψη για αυτό το ζεύγος. "
                 f"Σημείο: «{snip}»"
+            )
+        lines.extend(unsafe_claim_lines(self.unsafe_claims))
+        for n, what in self.thin_content:
+            lines.append(f"Οίκος {n}: {what}.")
+        for group, sample in self.repeated_text:
+            where = ", ".join(f"{n}ος" for n in group)
+            lines.append(
+                f"Ουσιαστικό μέρος του κειμένου επαναλαμβάνεται σε διαφορετικούς Οίκους ({where}), π.χ. "
+                f"«{sample}» — κάθε Οίκος χρειάζεται δική του ερμηνεία από τα δικά του στοιχεία του χάρτη."
             )
         return lines
 
@@ -295,6 +322,9 @@ def validate_analysis(chart, analysis_text: str, personal: dict | None = None) -
     malformed_aspect_rows = _malformed_aspect_rows(text)
     unauthorized_personal_claims = _unauthorized_personal_claims(personal, text)
     wrong_data_claims = _data_claim_errors(chart, text)
+    unsafe = unsafe_claims(text)
+    thin_content = thin_analysis_content(segments)
+    repeated = repeated_analysis_text(segments)
 
     # Έλεγχος συνέπειας ΟΛΩΝ των αναφερόμενων όψεων, όχι μόνο των
     # υποχρεωτικών τετραγώνων/αντιθέσεων. Έτσι εντοπίζεται, για παράδειγμα,
@@ -329,6 +359,9 @@ def validate_analysis(chart, analysis_text: str, personal: dict | None = None) -
         or stray_technical_values
         or malformed_aspect_rows
         or wrong_data_claims
+        or unsafe
+        or thin_content
+        or repeated
     )
     return ValidationResult(
         ok,
@@ -351,4 +384,7 @@ def validate_analysis(chart, analysis_text: str, personal: dict | None = None) -
         stray_technical_values=stray_technical_values,
         malformed_aspect_rows=malformed_aspect_rows,
         wrong_data_claims=wrong_data_claims,
+        unsafe_claims=unsafe,
+        thin_content=thin_content,
+        repeated_text=repeated,
     )

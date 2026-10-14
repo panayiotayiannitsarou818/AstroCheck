@@ -110,6 +110,9 @@ def test_max_rounds_setting_is_parsed_and_clamped():
 
 
 def test_unlimited_mode_keeps_going_until_approved():
+    # v18: χωρίς όριο γύρων ο κύκλος συνεχίζει όσο δεν «κολλάει» (στασιμότητα).
     answers = iter(["ΛΑΘΟΣ"] * 40 + ["σωστό"])
-    out = generate_validated("k", "Ε", _validator(["ΛΑΘΟΣ"]), max_rounds=0, complete=lambda k, t, m: next(answers))
+    out = generate_validated(
+        "k", "Ε", _validator(["ΛΑΘΟΣ"]), max_rounds=0, stall_rounds=50, complete=lambda k, t, m: next(answers)
+    )
     assert out.ok and len(out.rounds) == 41

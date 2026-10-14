@@ -40,6 +40,7 @@ def _run(answers, log=None, max_rounds=10):
         complete=lambda k, t, m: prompts.append(t) or next(it),
         validate_analysis_fn=lambda c, t, p: _check(t),
         validate_rewrite_fn=lambda c, a, t, p: _check(t),
+        content_review=False,  # ο έλεγχος ΤΝ έχει δικές του δοκιμές (test_v19.py)
     )
     return result, prompts
 
@@ -85,4 +86,39 @@ def test_result_panel_offers_both_downloads_when_everything_is_approved():
     at.run()
     assert not at.exception, [e.value for e in at.exception]
     texts = " ".join(s.value for s in at.success)
-    assert "Η ανάλυση εγκρίθηκε" in texts and "Το τελικό έντυπο του πελάτη εγκρίθηκε" in texts
+    # v18: «πέρασε τους ελέγχους…» αντί για «εγκρίθηκε»
+    assert "Η ανάλυση πέρασε τους ελέγχους" in texts and "Το τελικό έντυπο του πελάτη πέρασε τους ελέγχους" in texts
+    assert "εγκρίθηκε" not in texts
+
+
+def test_result_panel_explains_a_stalled_stop_and_shows_the_cost():
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=60).run()
+    at.session_state["chart"] = CHART
+    at.session_state["analysis"] = "1ος Οίκος\nκείμενο"
+    at.session_state["validation"] = Fake(False)
+    at.session_state["analysis_source"] = "api"
+    at.session_state["auto_result"] = {
+        "ok": False, "stopped_at": "Ανάλυση", "analysis_rounds": 7, "final_rounds": 0, "name": "A.",
+        "stop_reason": "στασιμότητα", "cap": 30, "usage": "7 αιτήματα · κόστος περίπου 3,10 € (3,60 $)",
+    }
+    at.run()
+    assert not at.exception, [e.value for e in at.exception]
+    errors = " ".join(e.value for e in at.error)
+    captions = " ".join(c.value for c in at.caption)
+    assert "στασιμότητα" in errors and "3,10 €" in captions
+
+
+def test_result_panel_explains_an_incomplete_content_review():
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=60).run()
+    at.session_state["chart"] = CHART
+    at.session_state["analysis"] = "1ος Οίκος\nκείμενο"
+    at.session_state["validation"] = Fake(False)
+    at.session_state["analysis_source"] = "api"
+    at.session_state["auto_result"] = {
+        "ok": False, "stopped_at": "Ανάλυση", "analysis_rounds": 1, "final_rounds": 0, "name": "A.",
+        "stop_reason": "ο έλεγχος περιεχομένου δεν ολοκληρώθηκε", "cap": 30, "usage": "",
+    }
+    at.run()
+    assert not at.exception, [e.value for e in at.exception]
+    errors = " ".join(e.value for e in at.error)
+    assert "ΔΕΝ θεωρείται ελεγμένο" in errors

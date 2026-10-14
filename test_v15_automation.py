@@ -25,7 +25,8 @@ def _load(name):
 
 def test_providers_and_models():
     assert G.PROVIDERS == ("Claude", "OpenAI")
-    assert G.completer("Claude") is G._anthropic_complete
+    # v17.1: ο completer του Claude περνά και το επίπεδο προσπάθειας (effort)
+    assert callable(G.completer("Claude"))
     assert G.completer("OpenAI") is G._openai_complete
     assert G.DEFAULT_MODELS["Claude"].startswith("claude-")
     with pytest.raises(ValueError):

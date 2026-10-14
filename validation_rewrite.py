@@ -20,6 +20,7 @@ from validation_patterns import (
 )
 import lexicon_en as EN
 from validation_aspects import _aspect_claim_problems
+from validation_safety import unsafe_claim_lines, unsafe_claims
 from validation_structure import (
     _data_claim_errors,
     _ruler_role_errors,
@@ -412,15 +413,18 @@ class RewriteValidationResult:
     aspect_claim_mismatches: list = field(default_factory=list)  # (όψη, διαφορά, απόσπασμα)
     wrong_ruler_claims: list = field(default_factory=list)  # (Οίκος, δηλωμένος, αναμενόμενοι, πού)
     wrong_data_claims: list = field(default_factory=list)  # (περιγραφή, πλαίσιο)
+    # v18: διαγνώσεις, βέβαιες προβλέψεις, απόλυτα επαγγελματικά συμπεράσματα
+    unsafe_claims: list = field(default_factory=list)  # (κατηγορία, πρόταση)
 
     def summary(self) -> str:
         if self.ok:
             return (
-                "✓ Ο μηχανικός έλεγχος (φίλτρο προφανών παραλείψεων) πέρασε: 12 Οίκοι με δικό τους "
+                "✓ Πέρασε τους ελέγχους δεδομένων, δομής και ασφαλούς γλώσσας: 12 Οίκοι με δικό τους "
                 "κείμενο και «Κεντρικό θέμα», "
                 "κάθε πλανήτης κατονομάζεται στον Οίκο του, όλες οι ενότητες της πηγής υπάρχουν με "
                 "περιεχόμενο, σωστές τοποθετήσεις και ζώδια, καμία όψη ή κυβερνήτης που δεν υπάρχει στον χάρτη, χωρίς τεχνικά δεδομένα (μοίρες, orb, "
-                "βαρύτητες, Παράρτημα). Δεν είναι έγκριση της ερμηνείας: ΔΕΝ ελέγχεται μηχανικά αν η "
+                "βαρύτητες, Παράρτημα), χωρίς διαγνώσεις, βέβαιες προβλέψεις ή απόλυτα επαγγελματικά "
+                "συμπεράσματα. Δεν είναι έγκριση της ερμηνείας: ΔΕΝ ελέγχεται μηχανικά αν η "
                 "ερμηνεία αποδίδει πιστά και πλήρως την ελεγμένη ανάλυση — αυτό χρειάζεται τη δική σου "
                 "ανάγνωση πριν την παράδοση."
             )
@@ -472,6 +476,10 @@ class RewriteValidationResult:
         if self.technical_data:
             counts.append(
                 f"{len(self.technical_data)} σημεία με τεχνικά αστρολογικά δεδομένα που δεν πρέπει να βλέπει ο πελάτης"
+            )
+        if self.unsafe_claims:
+            counts.append(
+                f"{len(self.unsafe_claims)} μη ασφαλείς διατυπώσεις (διάγνωση, βέβαιη πρόβλεψη ή απόλυτο επαγγελματικό συμπέρασμα)"
             )
         return "Η αναδιατύπωση απορρίφθηκε: " + "· ".join(counts) + "."
 
@@ -543,6 +551,7 @@ class RewriteValidationResult:
             lines.append(
                 f"Λανθασμένο ζώδιο — {point_name}: γράφεται {claimed} αντί για {expected}. Σημείο: {snippet}"
             )
+        lines.extend(unsafe_claim_lines(self.unsafe_claims))
         return lines
 
 
@@ -585,6 +594,7 @@ def validate_rewrite(
     undeclared_aspects, aspect_mismatches = _aspect_claim_problems(chart, rewrite_text)
     wrong_rulers = _ruler_role_errors(chart, rewrite_text)
     wrong_data = _data_claim_errors(chart, rewrite_text)
+    unsafe = unsafe_claims(rewrite_text)
     thin, no_theme, unnamed, empty_sections, repeated, repeated_warnings = _content_problems(
         chart, source_text, rewrite_text
     )
@@ -614,6 +624,7 @@ def validate_rewrite(
         or aspect_mismatches
         or wrong_rulers
         or wrong_data
+        or unsafe
     )
     return RewriteValidationResult(
         ok,
@@ -634,4 +645,5 @@ def validate_rewrite(
         aspect_claim_mismatches=aspect_mismatches,
         wrong_ruler_claims=wrong_rulers,
         wrong_data_claims=wrong_data,
+        unsafe_claims=unsafe,
     )
